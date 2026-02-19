@@ -104,8 +104,8 @@ def main():
     ptsA = sample_polygon_boundary(poly_a_shr, n_samples=400)
     ptsB = sample_polygon_boundary(poly_b_shr, n_samples=400)
 
-    affine, inliers = ransac_similarity_transform(ptsB, ptsA, n_iters=800, sample_size=3,
-                                                  inlier_thresh=0.18, min_inliers=40, random_seed=1)
+    affine, inliers = ransac_similarity_transform(ptsB, ptsA, n_iters=2000, sample_size=3,
+                                                  inlier_thresh=0.25, min_inliers=120, random_seed=1)
     if affine is None:
         print("RANSAC failed to find transform.")
         return
