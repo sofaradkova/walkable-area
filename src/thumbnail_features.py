@@ -280,6 +280,73 @@ def compute_polygon_intersection_metrics(poly_a, poly_b_aligned):
         'area_b': area_b
     }
 
+def verify_intersection_sufficient(metrics, 
+                                    min_iou: float = 0.1,
+                                    min_intersection_area: float = 0.5,
+                                    min_overlap_pct: float = 5.0):
+    """
+    Verify that the intersection area is sufficient (as per flowchart step).
+    
+    Checks multiple criteria to ensure the intersection is meaningful:
+    - IoU threshold: minimum Intersection over Union
+    - Minimum intersection area: absolute minimum area in m²
+    - Minimum overlap percentage: minimum percentage of either polygon covered
+    
+    Args:
+        metrics: Dictionary from compute_polygon_intersection_metrics
+        min_iou: Minimum IoU threshold (default 0.1 = 10%)
+        min_intersection_area: Minimum absolute intersection area in m² (default 0.5)
+        min_overlap_pct: Minimum overlap percentage for either polygon (default 5.0%)
+    
+    Returns:
+        dict with keys:
+            'verified': bool - whether intersection passes all checks
+            'iou_check': bool - whether IoU threshold is met
+            'area_check': bool - whether minimum area threshold is met
+            'overlap_check': bool - whether minimum overlap percentage is met
+            'reason': str - reason for failure if not verified
+    """
+    if metrics is None:
+        return {
+            'verified': False,
+            'iou_check': False,
+            'area_check': False,
+            'overlap_check': False,
+            'reason': 'Metrics are None'
+        }
+    
+    iou = metrics.get('iou', 0.0)
+    inter_area = metrics.get('intersection_area', 0.0)
+    overlap_pct_a = metrics.get('overlap_pct_a', 0.0)
+    overlap_pct_b = metrics.get('overlap_pct_b', 0.0)
+    
+    # Check each criterion
+    iou_check = iou >= min_iou
+    area_check = inter_area >= min_intersection_area
+    overlap_check = (overlap_pct_a >= min_overlap_pct) or (overlap_pct_b >= min_overlap_pct)
+    
+    verified = iou_check and area_check and overlap_check
+    
+    # Generate reason if not verified
+    reason = None
+    if not verified:
+        failures = []
+        if not iou_check:
+            failures.append(f'IoU {iou:.4f} < {min_iou:.4f}')
+        if not area_check:
+            failures.append(f'Area {inter_area:.2f} m² < {min_intersection_area:.2f} m²')
+        if not overlap_check:
+            failures.append(f'Overlap {max(overlap_pct_a, overlap_pct_b):.1f}% < {min_overlap_pct:.1f}%')
+        reason = '; '.join(failures)
+    
+    return {
+        'verified': verified,
+        'iou_check': iou_check,
+        'area_check': area_check,
+        'overlap_check': overlap_check,
+        'reason': reason if reason else 'All checks passed'
+    }
+
 def match_descriptors_knn_ratio(desc1, desc2, ratio: float = 0.85):
     """KNN ratio test only (no reciprocal cross-check)."""
     if desc1 is None or desc2 is None:

@@ -16,7 +16,7 @@ from src.rasterize import points_to_occupancy, postprocess_occupancy, occupancy_
 from src.thumbnail_features import (
     render_thumbnail_from_occupancy, _occ_to_thumbnail_mapping,
     detect_orb_features, match_descriptors_knn_ratio, estimate_transform_from_matches,
-    compute_polygon_intersection_metrics
+    compute_polygon_intersection_metrics, verify_intersection_sufficient
 )
 from src.polygon_ops import (
     estimate_rigid_umeyama, apply_affine_to_polygon, find_best_alignment_by_rotation
@@ -30,25 +30,62 @@ def save_geojson(poly, path):
     with open(path, "w") as f:
         json.dump(mapping(poly), f)
 
+def invert_affine_transform(affine_params):
+    """
+    Invert a 2D affine transform.
+    
+    Affine format: [a, b, d, e, xoff, yoff] where:
+        x' = a*x + b*y + xoff
+        y' = d*x + e*y + yoff
+    
+    Returns inverse transform [a', b', d', e', xoff', yoff'].
+    """
+    if affine_params is None:
+        return None
+    
+    a, b, d, e, xoff, yoff = affine_params
+    
+    # Compute determinant of the 2x2 rotation/scaling matrix
+    det = a * e - b * d
+    
+    if abs(det) < 1e-10:
+        # Singular matrix, cannot invert
+        return None
+    
+    # Inverse of [a b; d e] is (1/det) * [e -b; -d a]
+    a_inv = e / det
+    b_inv = -b / det
+    d_inv = -d / det
+    e_inv = a / det
+    
+    # Inverse translation: -inv_matrix * [xoff; yoff]
+    xoff_inv = -(a_inv * xoff + b_inv * yoff)
+    yoff_inv = -(d_inv * xoff + e_inv * yoff)
+    
+    return [a_inv, b_inv, d_inv, e_inv, xoff_inv, yoff_inv]
+
 def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, outpath,
                      occ_a=None, occ_b=None, bbox_a=None, bbox_b=None, 
-                     thumbA=None, thumbB=None, matches=None, ptsA_uv=None, ptsB_uv=None, inlier_mask=None):
+                     thumbA=None, thumbB=None, matches=None, ptsA_uv=None, ptsB_uv=None, inlier_mask=None,
+                     verification=None, final_affine=None):
     """Plot comprehensive test result with occupancy images and feature visualization."""
-    fig = plt.figure(figsize=(22, 10))
-    # Grid: 3 rows, 5 cols - alignment panel gets 2 cols x all 3 rows (largest)
-    gs = fig.add_gridspec(3, 5, hspace=0.35, wspace=0.3, 
-                         width_ratios=[1, 1, 1, 2, 2],
-                         height_ratios=[1, 1, 1])
+    fig = plt.figure(figsize=(24, 12))
+    # Grid: 4 rows, 6 cols - alignment panel gets 2 cols x all 4 rows (largest)
+    gs = fig.add_gridspec(4, 6, hspace=0.35, wspace=0.3, 
+                         width_ratios=[1, 1, 1, 1, 2, 2],
+                         height_ratios=[1, 1, 1, 1])
     
     # Create subplots - smaller panels on left, large alignment on right
     ax_occ_a = fig.add_subplot(gs[0, 0])  # Room A occupancy
     ax_occ_b = fig.add_subplot(gs[0, 1])  # Room B occupancy
     ax_thumb_a = fig.add_subplot(gs[0, 2])  # Room A thumbnail
+    ax_thumb_b = fig.add_subplot(gs[0, 3])  # Room B thumbnail
     ax_before_a = fig.add_subplot(gs[1, 0])  # Room A before (separate)
     ax_before_b = fig.add_subplot(gs[1, 1])  # Room B before (separate)
-    ax_thumb_b = fig.add_subplot(gs[1, 2])  # Room B thumbnail
-    ax_features = fig.add_subplot(gs[2, 0:3])  # Feature matches (smaller, spans 3 cols in bottom row)
-    ax_after = fig.add_subplot(gs[0:, 3:])  # After alignment (LARGE - spans all rows, 2 rightmost cols)
+    ax_inter_a = fig.add_subplot(gs[2, 0])  # Intersection in A's coordinate system
+    ax_inter_b = fig.add_subplot(gs[2, 1])  # Intersection in B's coordinate system
+    ax_features = fig.add_subplot(gs[1:3, 2:4])  # Feature matches (spans 2 rows, 2 cols)
+    ax_after = fig.add_subplot(gs[0:, 4:])  # After alignment (LARGE - spans all rows, 2 rightmost cols)
     
     # 1. Occupancy images
     if occ_a is not None and bbox_a is not None:
@@ -154,7 +191,39 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     ax_before_b.set_xlabel('X (m)')
     ax_before_b.set_ylabel('Y (m)')
     
-    # 5. After alignment with intersection
+    # 5. Intersection in each coordinate system (separate panels)
+    # Intersection in Room A's coordinate system
+    plot_polygon(ax_inter_a, poly_a, 'tab:blue', label='Room A', alpha=0.2)
+    if inter and not inter.is_empty:
+        plot_polygon(ax_inter_a, inter, 'purple', label=f'Intersection ({metrics["intersection_area"]:.2f} m²)', 
+                    alpha=0.7, linestyle='-', linewidth=2)
+    ax_inter_a.set_title('Intersection in A Coordinate System')
+    ax_inter_a.set_aspect('equal')
+    ax_inter_a.grid(True, alpha=0.3)
+    ax_inter_a.legend()
+    ax_inter_a.set_xlabel('X (m)')
+    ax_inter_a.set_ylabel('Y (m)')
+    
+    # Intersection in Room B's original coordinate system
+    plot_polygon(ax_inter_b, poly_b, 'tab:green', label='Room B', alpha=0.2)
+    inter_in_b_coords = None
+    if inter and not inter.is_empty and final_affine is not None:
+        inv_affine = invert_affine_transform(final_affine)
+        if inv_affine is not None:
+            from src.polygon_ops import apply_affine_to_polygon
+            inter_in_b_coords = apply_affine_to_polygon(inter, inv_affine)
+            if inter_in_b_coords and not inter_in_b_coords.is_empty:
+                plot_polygon(ax_inter_b, inter_in_b_coords, 'purple', 
+                            label=f'Intersection ({metrics["intersection_area"]:.2f} m²)', 
+                            alpha=0.7, linestyle='-', linewidth=2)
+    ax_inter_b.set_title('Intersection in B Coordinate System')
+    ax_inter_b.set_aspect('equal')
+    ax_inter_b.grid(True, alpha=0.3)
+    ax_inter_b.legend()
+    ax_inter_b.set_xlabel('X (m)')
+    ax_inter_b.set_ylabel('Y (m)')
+    
+    # 6. After alignment with intersection
     plot_polygon(ax_after, poly_a, 'tab:blue', label='Room A', alpha=0.2)
     if poly_b_aligned:
         plot_polygon(ax_after, poly_b_aligned, 'tab:red', linestyle='--', 
@@ -175,13 +244,24 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
                     label=f'Intersection ({metrics["intersection_area"]:.2f} m²)', 
                     edgecolor='darkviolet', linewidth=2)
     
-    # Add metrics text
+    # Add metrics text with verification status
+    verified_status = "✓ VERIFIED" if verification and verification.get('verified', False) else "✗ NOT VERIFIED"
+    status_color = 'lightgreen' if verification and verification.get('verified', False) else 'lightcoral'
+    
     metrics_text = (f'IoU: {metrics["iou"]:.3f}\n'
                    f'Overlap: {metrics["intersection_area"]:.2f} m²\n'
                    f'Room A: {metrics["area_a"]:.2f} m²\n'
-                   f'Room B: {metrics["area_b"]:.2f} m²')
+                   f'Room B: {metrics["area_b"]:.2f} m²\n'
+                   f'\n{verified_status}')
     ax_after.text(0.02, 0.98, metrics_text, transform=ax_after.transAxes, fontsize=10,
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            verticalalignment='top', bbox=dict(boxstyle='round', facecolor=status_color, alpha=0.8))
+    
+    # Add verification details if not verified
+    if verification and not verification.get('verified', False):
+        reason_text = verification.get('reason', 'Unknown reason')
+        ax_after.text(0.02, 0.02, f'Verification failed:\n{reason_text}', 
+                     transform=ax_after.transAxes, fontsize=8,
+                     verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
     
     ax_after.set_title(f'{test_name}\nAfter Alignment (IoU: {metrics["iou"]:.3f})')
     ax_after.set_aspect('equal')
@@ -247,6 +327,8 @@ def run_single_test(test_config, test_num):
     # Variables for visualization (initialize)
     matches_for_viz = matches if matches else []
     inlier_mask_for_viz = None
+    final_affine = None  # Track the final transform used
+    transform_method = None  # Track which method was used
     
     if len(matches) < 6:
         print("Too few matches, trying rotation search only...")
@@ -256,6 +338,8 @@ def run_single_test(test_config, test_num):
         if best_affine is None:
             print("Failed to find alignment")
             return None
+        final_affine = best_affine
+        transform_method = "rotation_search"
         poly_b_aligned = apply_affine_to_polygon(poly_b_world, best_affine)
         metrics = compute_polygon_intersection_metrics(poly_a_world, poly_b_aligned)
     else:
@@ -269,6 +353,8 @@ def run_single_test(test_config, test_num):
             if best_affine is None:
                 print("Failed to find alignment")
                 return None
+            final_affine = best_affine
+            transform_method = "rotation_search_fallback"
             poly_b_aligned = apply_affine_to_polygon(poly_b_world, best_affine)
             metrics = compute_polygon_intersection_metrics(poly_a_world, poly_b_aligned)
         else:
@@ -289,6 +375,8 @@ def run_single_test(test_config, test_num):
                 best_affine, best_iou, best_inter = find_best_alignment_by_rotation(
                     poly_a_world, poly_b_world, rotation_angles=list(range(0, 360, 15)), use_centroids=True
                 )
+                final_affine = best_affine
+                transform_method = "rotation_search_insufficient_inliers"
                 poly_b_aligned = apply_affine_to_polygon(poly_b_world, best_affine)
                 metrics = compute_polygon_intersection_metrics(poly_a_world, poly_b_aligned)
             else:
@@ -311,13 +399,19 @@ def run_single_test(test_config, test_num):
                     metrics_feature = compute_polygon_intersection_metrics(poly_a_world, poly_b_feature)
                     if best_iou_rotation > metrics_feature['iou']:
                         print(f"Using rotation search (IoU: {best_iou_rotation:.4f} > {metrics_feature['iou']:.4f})")
+                        final_affine = best_affine_rotation
+                        transform_method = "rotation_search_comparison"
                         poly_b_aligned = apply_affine_to_polygon(poly_b_world, best_affine_rotation)
                         metrics = compute_polygon_intersection_metrics(poly_a_world, poly_b_aligned)
                     else:
                         print(f"Using feature-based (IoU: {metrics_feature['iou']:.4f} >= {best_iou_rotation:.4f})")
+                        final_affine = world_affine_feature
+                        transform_method = "feature_based_umeyama"
                         poly_b_aligned = poly_b_feature
                         metrics = metrics_feature
                 else:
+                    final_affine = best_affine_rotation
+                    transform_method = "rotation_search_feature_failed"
                     poly_b_aligned = apply_affine_to_polygon(poly_b_world, best_affine_rotation)
                     metrics = compute_polygon_intersection_metrics(poly_a_world, poly_b_aligned)
     
@@ -325,10 +419,72 @@ def run_single_test(test_config, test_num):
         print("Failed to compute metrics")
         return None
     
-    # Visualize with occupancy images and features
-    inter = metrics['intersection']
-    outpath = os.path.join(OUT, f"test_{test_num:02d}_{test_config['name'].replace(' ', '_').lower()}.png")
+    # VERIFICATION STEP: Verify that the area is sufficient (per flowchart)
+    verification = verify_intersection_sufficient(
+        metrics,
+        min_iou=0.1,  # Minimum 10% IoU
+        min_intersection_area=0.5,  # Minimum 0.5 m² intersection
+        min_overlap_pct=5.0  # Minimum 5% overlap of either polygon
+    )
     
+    inter = metrics['intersection']
+    verified_inter = inter if verification['verified'] else None
+    
+    # STORAGE: Save verified results (per flowchart - "Verified intersection polygon")
+    test_base = f"test_{test_num:02d}_{test_config['name'].replace(' ', '_').lower()}"
+    outpath = os.path.join(OUT, f"{test_base}.png")
+    
+    # Save GeoJSON files for verified intersection
+    if verified_inter is not None and not verified_inter.is_empty:
+        save_geojson(poly_a_world, os.path.join(OUT, f"{test_base}_room_a.geojson"))
+        save_geojson(poly_b_world, os.path.join(OUT, f"{test_base}_room_b_original.geojson"))
+        save_geojson(poly_b_aligned, os.path.join(OUT, f"{test_base}_room_b_aligned.geojson"))
+        save_geojson(verified_inter, os.path.join(OUT, f"{test_base}_intersection_verified.geojson"))
+    
+    # Save metrics and verification results as JSON (including transform matrix)
+    result_data = {
+        'test_name': test_config['name'],
+        'test_num': test_num,
+        'transform': {
+            'method': transform_method,
+            'affine_matrix': list(final_affine) if final_affine is not None else None,
+            'affine_params': {
+                'a': float(final_affine[0]) if final_affine is not None else None,
+                'b': float(final_affine[1]) if final_affine is not None else None,
+                'c': float(final_affine[2]) if final_affine is not None else None,
+                'd': float(final_affine[3]) if final_affine is not None else None,
+                'e': float(final_affine[4]) if final_affine is not None else None,
+                'f': float(final_affine[5]) if final_affine is not None else None
+            } if final_affine is not None else None
+        },
+        'metrics': {
+            'iou': float(metrics['iou']),
+            'intersection_area': float(metrics['intersection_area']),
+            'union_area': float(metrics['union_area']),
+            'overlap_pct_a': float(metrics['overlap_pct_a']),
+            'overlap_pct_b': float(metrics['overlap_pct_b']),
+            'area_a': float(metrics['area_a']),
+            'area_b': float(metrics['area_b'])
+        },
+        'verification': {
+            'verified': verification['verified'],
+            'iou_check': verification['iou_check'],
+            'area_check': verification['area_check'],
+            'overlap_check': verification['overlap_check'],
+            'reason': verification['reason']
+        },
+        'verification_thresholds': {
+            'min_iou': 0.1,
+            'min_intersection_area': 0.5,
+            'min_overlap_pct': 5.0
+        }
+    }
+    
+    json_path = os.path.join(OUT, f"{test_base}_results.json")
+    with open(json_path, 'w') as f:
+        json.dump(result_data, f, indent=2)
+    
+    # Visualize with occupancy images and features (include verification status)
     plot_test_result(poly_a_world, poly_b_world, poly_b_aligned, inter, metrics, 
                     test_config['name'], outpath,
                     occ_a=occ_a_clean, occ_b=occ_b_clean,
@@ -336,13 +492,27 @@ def run_single_test(test_config, test_num):
                     thumbA=thumbA, thumbB=thumbB,
                     matches=matches_for_viz,
                     ptsA_uv=ptsA_uv, ptsB_uv=ptsB_uv,
-                    inlier_mask=inlier_mask_for_viz)
+                    inlier_mask=inlier_mask_for_viz,
+                    verification=verification,
+                    final_affine=final_affine)
     
-    print(f"✓ Test {test_num} complete: IoU={metrics['iou']:.4f}, "
+    # Print verification status
+    status_icon = "✓ VERIFIED" if verification['verified'] else "✗ NOT VERIFIED"
+    print(f"{status_icon} Test {test_num} complete: IoU={metrics['iou']:.4f}, "
           f"Intersection={metrics['intersection_area']:.2f} m²")
-    print(f"  Saved to {outpath}")
+    if not verification['verified']:
+        print(f"  Verification failed: {verification['reason']}")
+    print(f"  Saved visualization to {outpath}")
+    print(f"  Saved results JSON to {json_path}")
+    if verified_inter is not None:
+        print(f"  Saved verified intersection GeoJSON")
     
-    return metrics
+    # Return metrics with verification status
+    return {
+        **metrics,
+        'verification': verification,
+        'verified_intersection': verified_inter
+    }
 
 def main():
     # Define 5 different test cases
@@ -415,30 +585,51 @@ def main():
     ]
     
     results = []
+    verified_count = 0
     for i, test_config in enumerate(test_cases, 1):
-        metrics = run_single_test(test_config, i)
-        if metrics:
+        result = run_single_test(test_config, i)
+        if result:
+            verification = result.get('verification', {})
             results.append({
                 'test': test_config['name'],
-                'iou': metrics['iou'],
-                'intersection_area': metrics['intersection_area'],
-                'area_a': metrics['area_a'],
-                'area_b': metrics['area_b']
+                'iou': result['iou'],
+                'intersection_area': result['intersection_area'],
+                'area_a': result['area_a'],
+                'area_b': result['area_b'],
+                'verified': verification.get('verified', False),
+                'verification_reason': verification.get('reason', 'N/A')
             })
+            if verification.get('verified', False):
+                verified_count += 1
     
-    # Print summary
+    # Print summary with verification status
     print(f"\n{'='*60}")
     print("SUMMARY OF ALL TESTS")
     print(f"{'='*60}")
     for r in results:
-        print(f"{r['test']}:")
+        status = "✓ VERIFIED" if r['verified'] else "✗ NOT VERIFIED"
+        print(f"{r['test']}: {status}")
         print(f"  IoU: {r['iou']:.4f}")
         print(f"  Intersection: {r['intersection_area']:.2f} m²")
         print(f"  Room A: {r['area_a']:.2f} m², Room B: {r['area_b']:.2f} m²")
+        if not r['verified']:
+            print(f"  Reason: {r['verification_reason']}")
         print()
     
+    # Print verification statistics
+    print(f"{'='*60}")
+    print(f"VERIFICATION SUMMARY")
+    print(f"{'='*60}")
+    print(f"Verified: {verified_count}/{len(results)} ({verified_count/len(results)*100:.1f}%)")
+    print(f"Not Verified: {len(results) - verified_count}/{len(results)} ({(len(results)-verified_count)/len(results)*100:.1f}%)")
+    print()
+    
     print(f"All test visualizations saved to {OUT}/")
-    print("Files: test_01_*.png through test_05_*.png")
+    print("Files:")
+    print("  - test_XX_*.png (visualizations)")
+    print("  - test_XX_*_results.json (metrics and verification)")
+    print("  - test_XX_*_intersection_verified.geojson (verified intersections)")
+    print("  - test_XX_*_room_*.geojson (room polygons)")
 
 if __name__ == "__main__":
     main()

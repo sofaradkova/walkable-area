@@ -1,0 +1,44 @@
+{
+  "test_name": "Test 3: Similar Size, Different Layout",
+  "test_num": 3,
+  "transform": {
+    "method": "rotation_search_comparison",
+    "affine_matrix": [
+      -1.0,
+      -1.2246467991473532e-16,
+      1.2246467991473532e-16,
+      -1.0,
+      5.712251246430666,
+      5.245566866559714
+    ],
+    "affine_params": {
+      "a": -1.0,
+      "b": -1.2246467991473532e-16,
+      "c": 1.2246467991473532e-16,
+      "d": -1.0,
+      "e": 5.712251246430666,
+      "f": 5.245566866559714
+    }
+  },
+  "metrics": {
+    "iou": 0.6365363049925483,
+    "intersection_area": 16.081594828377167,
+    "union_area": 25.26422248384627,
+    "overlap_pct_a": 76.58987428752081,
+    "overlap_pct_b": 79.02972496487277,
+    "area_a": 20.99702470852263,
+    "area_b": 20.348792603700865
+  },
+  "verification": {
+    "verified": true,
+    "iou_check": true,
+    "area_check": true,
+    "overlap_check": true,
+    "reason": "All checks passed"
+  },
+  "verification_thresholds": {
+    "min_iou": 0.1,
+    "min_intersection_area": 0.5,
+    "min_overlap_pct": 5.0
+  }
+}
