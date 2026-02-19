@@ -215,17 +215,56 @@ def compute_polygon_intersection_metrics(poly_a, poly_b_aligned):
             'area_b': poly_b_aligned.area if not poly_b_aligned.is_empty else 0.0
         }
     
-    # Compute intersection (handles rotated polygons automatically)
-    inter = poly_a.intersection(poly_b_aligned)
-    inter_area = inter.area if inter and not inter.is_empty else 0.0
+    # Validate and fix polygons if needed
+    try:
+        if not poly_a.is_valid:
+            poly_a = poly_a.buffer(0)
+        if not poly_b_aligned.is_valid:
+            poly_b_aligned = poly_b_aligned.buffer(0)
+    except:
+        # If buffering fails, return zero metrics
+        return {
+            'intersection': None,
+            'intersection_area': 0.0,
+            'union_area': poly_a.area if poly_a and not poly_a.is_empty else 0.0,
+            'iou': 0.0,
+            'overlap_pct_a': 0.0,
+            'overlap_pct_b': 0.0,
+            'area_a': poly_a.area if poly_a and not poly_a.is_empty else 0.0,
+            'area_b': poly_b_aligned.area if poly_b_aligned and not poly_b_aligned.is_empty else 0.0
+        }
     
-    # Compute union
-    union = poly_a.union(poly_b_aligned)
-    union_area = union.area if union and not union.is_empty else poly_a.area
+    # Compute intersection (handles rotated polygons automatically)
+    try:
+        inter = poly_a.intersection(poly_b_aligned)
+        inter_area = inter.area if inter and not inter.is_empty else 0.0
+        
+        # Compute union
+        union = poly_a.union(poly_b_aligned)
+        union_area = union.area if union and not union.is_empty else poly_a.area
+    except Exception as e:
+        # If intersection fails due to precision issues, try with buffered polygons
+        try:
+            poly_a_buf = poly_a.buffer(0.001)
+            poly_b_buf = poly_b_aligned.buffer(0.001)
+            if poly_a_buf.is_empty or poly_b_buf.is_empty:
+                inter = None
+                inter_area = 0.0
+                union_area = poly_a.area
+            else:
+                inter = poly_a_buf.intersection(poly_b_buf)
+                inter_area = inter.area if inter and not inter.is_empty else 0.0
+                union = poly_a_buf.union(poly_b_buf)
+                union_area = union.area if union and not union.is_empty else poly_a_buf.area
+        except:
+            # If still fails, return zero metrics
+            inter = None
+            inter_area = 0.0
+            union_area = poly_a.area if poly_a and not poly_a.is_empty else 0.0
     
     # Compute metrics
-    area_a = poly_a.area
-    area_b = poly_b_aligned.area
+    area_a = poly_a.area if poly_a and not poly_a.is_empty else 0.0
+    area_b = poly_b_aligned.area if poly_b_aligned and not poly_b_aligned.is_empty else 0.0
     iou = inter_area / union_area if union_area > 0 else 0.0
     overlap_pct_a = (inter_area / area_a * 100) if area_a > 0 else 0.0
     overlap_pct_b = (inter_area / area_b * 100) if area_b > 0 else 0.0

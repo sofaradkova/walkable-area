@@ -236,12 +236,40 @@ def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_ce
     
     from shapely.affinity import rotate, translate
     
+    # Ensure polygons are valid before processing
+    if not poly_a.is_valid:
+        try:
+            poly_a = poly_a.buffer(0)
+        except:
+            return None, 0.0, 0.0
+    
+    if not poly_b.is_valid:
+        try:
+            poly_b = poly_b.buffer(0)
+        except:
+            return None, 0.0, 0.0
+    
+    # Store original poly_a (don't modify it in the loop)
+    poly_a_original = poly_a
+    
     # Center both polygons for rotation
     if use_centroids:
         centroid_a = poly_a.centroid
         centroid_b = poly_b.centroid
         poly_a_centered = translate(poly_a, xoff=-centroid_a.x, yoff=-centroid_a.y)
         poly_b_centered = translate(poly_b, xoff=-centroid_b.x, yoff=-centroid_b.y)
+        
+        # Validate centered polygons
+        if not poly_a_centered.is_valid:
+            try:
+                poly_a_centered = poly_a_centered.buffer(0)
+            except:
+                return None, 0.0, 0.0
+        if not poly_b_centered.is_valid:
+            try:
+                poly_b_centered = poly_b_centered.buffer(0)
+            except:
+                return None, 0.0, 0.0
     else:
         centroid_a = None
         centroid_b = None
@@ -302,12 +330,40 @@ def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_ce
             poly_b_rotated = rotate(poly_b_centered, angle_deg, origin=(0, 0), use_radians=False)
             best_affine_candidate = [cos_a, -sin_a, sin_a, cos_a, 0.0, 0.0]
         
+        # Validate polygons before computing intersection (use original poly_a, don't modify it)
+        poly_a_for_inter = poly_a_original  # Use original poly_a (already validated at start)
+        
+        if not poly_b_rotated.is_valid:
+            try:
+                poly_b_rotated = poly_b_rotated.buffer(0)
+                if poly_b_rotated.is_empty:
+                    continue
+            except:
+                continue  # Skip this rotation if poly_b_rotated can't be fixed
+        
         # Compute intersection with this rotation+translation
-        inter = poly_a.intersection(poly_b_rotated)
-        inter_area = inter.area if inter and not inter.is_empty else 0.0
-        union = poly_a.union(poly_b_rotated)
-        union_area = union.area if union and not union.is_empty else poly_a.area
-        iou = inter_area / union_area if union_area > 0 else 0.0
+        try:
+            inter = poly_a_for_inter.intersection(poly_b_rotated)
+            inter_area = inter.area if inter and not inter.is_empty else 0.0
+            
+            union = poly_a_for_inter.union(poly_b_rotated)
+            union_area = union.area if union and not union.is_empty else poly_a_for_inter.area
+            iou = inter_area / union_area if union_area > 0 else 0.0
+        except Exception as e:
+            # Skip this rotation if intersection fails (invalid geometry)
+            # Try with buffered polygons to fix precision issues
+            try:
+                poly_a_buf = poly_a_for_inter.buffer(0.001)
+                poly_b_buf = poly_b_rotated.buffer(0.001)
+                if poly_a_buf.is_empty or poly_b_buf.is_empty:
+                    continue
+                inter = poly_a_buf.intersection(poly_b_buf)
+                inter_area = inter.area if inter and not inter.is_empty else 0.0
+                union = poly_a_buf.union(poly_b_buf)
+                union_area = union.area if union and not union.is_empty else poly_a_buf.area
+                iou = inter_area / union_area if union_area > 0 else 0.0
+            except:
+                continue  # Skip this rotation entirely if still fails
         
         if iou > best_iou or (iou == best_iou and inter_area > best_inter_area):
             best_iou = iou
