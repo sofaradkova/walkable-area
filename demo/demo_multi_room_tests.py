@@ -175,37 +175,34 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
                 ax.fill(xi, yi, color='gray', alpha=0.2)
     
     # 4. Before alignment - show rooms separately
-    plot_polygon(ax_before_a, poly_a, 'tab:blue', label='Room A', alpha=0.3)
+    plot_polygon(ax_before_a, poly_a, 'tab:blue', label=None, alpha=0.3)
     ax_before_a.set_title('Room A (Before Alignment)')
     ax_before_a.set_aspect('equal')
     ax_before_a.grid(True, alpha=0.3)
-    ax_before_a.legend()
     ax_before_a.set_xlabel('X (m)')
     ax_before_a.set_ylabel('Y (m)')
     
-    plot_polygon(ax_before_b, poly_b, 'tab:green', label='Room B (original)', alpha=0.3)
+    plot_polygon(ax_before_b, poly_b, 'tab:green', label=None, alpha=0.3)
     ax_before_b.set_title('Room B (Before Alignment)')
     ax_before_b.set_aspect('equal')
     ax_before_b.grid(True, alpha=0.3)
-    ax_before_b.legend()
     ax_before_b.set_xlabel('X (m)')
     ax_before_b.set_ylabel('Y (m)')
     
     # 5. Intersection in each coordinate system (separate panels)
     # Intersection in Room A's coordinate system
-    plot_polygon(ax_inter_a, poly_a, 'tab:blue', label='Room A', alpha=0.2)
+    plot_polygon(ax_inter_a, poly_a, 'tab:blue', label=None, alpha=0.2)
     if inter and not inter.is_empty:
-        plot_polygon(ax_inter_a, inter, 'purple', label=f'Intersection ({metrics["intersection_area"]:.2f} m²)', 
+        plot_polygon(ax_inter_a, inter, 'purple', label=None, 
                     alpha=0.7, linestyle='-', linewidth=2)
     ax_inter_a.set_title('Intersection in A Coordinate System')
     ax_inter_a.set_aspect('equal')
     ax_inter_a.grid(True, alpha=0.3)
-    ax_inter_a.legend()
     ax_inter_a.set_xlabel('X (m)')
     ax_inter_a.set_ylabel('Y (m)')
     
     # Intersection in Room B's original coordinate system
-    plot_polygon(ax_inter_b, poly_b, 'tab:green', label='Room B', alpha=0.2)
+    plot_polygon(ax_inter_b, poly_b, 'tab:green', label=None, alpha=0.2)
     inter_in_b_coords = None
     if inter and not inter.is_empty and final_affine is not None:
         inv_affine = invert_affine_transform(final_affine)
@@ -214,19 +211,18 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
             inter_in_b_coords = apply_affine_to_polygon(inter, inv_affine)
             if inter_in_b_coords and not inter_in_b_coords.is_empty:
                 plot_polygon(ax_inter_b, inter_in_b_coords, 'purple', 
-                            label=f'Intersection ({metrics["intersection_area"]:.2f} m²)', 
+                            label=None, 
                             alpha=0.7, linestyle='-', linewidth=2)
     ax_inter_b.set_title('Intersection in B Coordinate System')
     ax_inter_b.set_aspect('equal')
     ax_inter_b.grid(True, alpha=0.3)
-    ax_inter_b.legend()
     ax_inter_b.set_xlabel('X (m)')
     ax_inter_b.set_ylabel('Y (m)')
     
     # 6. After alignment with intersection
     plot_polygon(ax_after, poly_a, 'tab:blue', label='Room A', alpha=0.2)
     if poly_b_aligned:
-        plot_polygon(ax_after, poly_b_aligned, 'tab:red', linestyle='--', 
+        plot_polygon(ax_after, poly_b_aligned, 'tab:green', linestyle='--', 
                     label='Room B (aligned)', alpha=0.2)
     
     # Highlight intersection
@@ -244,24 +240,6 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
                     label=f'Intersection ({metrics["intersection_area"]:.2f} m²)', 
                     edgecolor='darkviolet', linewidth=2)
     
-    # Add metrics text with verification status
-    verified_status = "✓ VERIFIED" if verification and verification.get('verified', False) else "✗ NOT VERIFIED"
-    status_color = 'lightgreen' if verification and verification.get('verified', False) else 'lightcoral'
-    
-    metrics_text = (f'IoU: {metrics["iou"]:.3f}\n'
-                   f'Overlap: {metrics["intersection_area"]:.2f} m²\n'
-                   f'Room A: {metrics["area_a"]:.2f} m²\n'
-                   f'Room B: {metrics["area_b"]:.2f} m²\n'
-                   f'\n{verified_status}')
-    ax_after.text(0.02, 0.98, metrics_text, transform=ax_after.transAxes, fontsize=10,
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor=status_color, alpha=0.8))
-    
-    # Add verification details if not verified
-    if verification and not verification.get('verified', False):
-        reason_text = verification.get('reason', 'Unknown reason')
-        ax_after.text(0.02, 0.02, f'Verification failed:\n{reason_text}', 
-                     transform=ax_after.transAxes, fontsize=8,
-                     verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
     
     ax_after.set_title(f'{test_name}\nAfter Alignment (IoU: {metrics["iou"]:.3f})')
     ax_after.set_aspect('equal')
