@@ -1,0 +1,6 @@
+numpy
+shapely
+pillow
+pytest
+matplotlib
+opencv-python
