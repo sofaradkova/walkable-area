@@ -1,0 +1,44 @@
+{
+  "test_name": "Room0 vs Room1",
+  "test_num": 1,
+  "transform": {
+    "method": "rotation_search_comparison",
+    "affine_matrix": [
+      0.9659258262890683,
+      0.2588190451025207,
+      -0.2588190451025207,
+      0.9659258262890683,
+      -0.9675065669168005,
+      4.980562899782608
+    ],
+    "affine_params": {
+      "a": 0.9659258262890683,
+      "b": 0.2588190451025207,
+      "c": -0.2588190451025207,
+      "d": 0.9659258262890683,
+      "e": -0.9675065669168005,
+      "f": 4.980562899782608
+    }
+  },
+  "metrics": {
+    "iou": 0.38750390093479425,
+    "intersection_area": 9.12065600012527,
+    "union_area": 23.536939829826423,
+    "overlap_pct_a": 41.30633841421004,
+    "overlap_pct_b": 86.23044464254862,
+    "area_a": 22.080524080022595,
+    "area_b": 10.577071749929111
+  },
+  "verification": {
+    "verified": true,
+    "iou_check": true,
+    "area_check": true,
+    "overlap_check": true,
+    "reason": "All checks passed"
+  },
+  "verification_thresholds": {
+    "min_iou": 0.1,
+    "min_intersection_area": 0.5,
+    "min_overlap_pct": 5.0
+  }
+}

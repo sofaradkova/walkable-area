@@ -21,9 +21,26 @@ from src.thumbnail_features import (
 from src.polygon_ops import (
     estimate_rigid_umeyama, apply_affine_to_polygon, find_best_alignment_by_rotation
 )
+from src.mesh_processing import compute_walkable_polygon
 
 OUT = "demo_out"
 os.makedirs(OUT, exist_ok=True)
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+
+
+def _poly_area_and_holes(poly):
+    """
+    Return (area, num_holes) for Polygon or MultiPolygon.
+    """
+    if poly is None:
+        return 0.0, 0
+    if isinstance(poly, MultiPolygon):
+        area = sum(g.area for g in poly.geoms)
+        holes = sum(len(g.interiors) for g in poly.geoms)
+        return area, holes
+    # Simple Polygon
+    return poly.area, len(poly.interiors)
 
 def save_geojson(poly, path):
     if poly is None: return
@@ -252,26 +269,48 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     fig.savefig(outpath, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
+def _load_room_polygon(room_cfg):
+    """
+    Load a room polygon.
+
+    Supports two modes:
+      - Synthetic: config has 'width'/'height' etc. → use make_realistic_room
+      - Real: config has 'mesh' and 'info' → use compute_walkable_polygon
+    """
+    if "mesh" in room_cfg and "info" in room_cfg:
+        mesh_path = os.path.join(DATA_DIR, room_cfg["mesh"])
+        info_path = os.path.join(DATA_DIR, room_cfg["info"])
+        print(f"Loading real room from mesh={mesh_path}, info={info_path}")
+        poly = compute_walkable_polygon(mesh_path, info_path, visualize=False, debug=False)
+        return poly
+
+    # Fallback: synthetic generator (legacy mode)
+    print(f"Generating synthetic room: {room_cfg['width']}m × {room_cfg['height']}m")
+    return make_realistic_room(**room_cfg)
+
+
 def run_single_test(test_config, test_num):
     """Run a single test case."""
     print(f"\n{'='*60}")
     print(f"TEST {test_num}: {test_config['name']}")
     print(f"{'='*60}")
     
-    # Generate Room A
-    print(f"Generating Room A: {test_config['room_a']['width']}m × {test_config['room_a']['height']}m")
-    a_poly = make_realistic_room(**test_config['room_a'])
+    # Load Room A
+    a_poly = _load_room_polygon(test_config['room_a'])
     
-    # Generate Room B
-    print(f"Generating Room B: {test_config['room_b']['width']}m × {test_config['room_b']['height']}m")
-    b_poly = make_realistic_room(**test_config['room_b'])
+    # Load Room B
+    b_poly = _load_room_polygon(test_config['room_b'])
     
-    print(f"Room A area: {a_poly.area:.2f} m², furniture: {len(a_poly.interiors)}")
-    print(f"Room B area: {b_poly.area:.2f} m², furniture: {len(b_poly.interiors)}")
+    area_a, furn_a = _poly_area_and_holes(a_poly)
+    area_b, furn_b = _poly_area_and_holes(b_poly)
+    print(f"Room A area: {area_a:.2f} m², furniture-like holes: {furn_a}")
+    print(f"Room B area: {area_b:.2f} m², furniture-like holes: {furn_b}")
     
-    # Sample points
-    pts_a = sample_floor_points(a_poly, n_points=4000, seed=test_config['room_a']['seed'])
-    pts_b = sample_floor_points(b_poly, n_points=3500, seed=test_config['room_b']['seed'])
+    # Sample points (use configured seeds if present, otherwise deterministic defaults)
+    seed_a = test_config['room_a'].get('seed', 100 + test_num)
+    seed_b = test_config['room_b'].get('seed', 200 + test_num)
+    pts_a = sample_floor_points(a_poly, n_points=4000, seed=seed_a)
+    pts_b = sample_floor_points(b_poly, n_points=3500, seed=seed_b)
     
     # Rasterize
     occ_a, bbox_a, res_a = points_to_occupancy(pts_a[:, :2], resolution=0.03, margin=0.2)
@@ -493,71 +532,39 @@ def run_single_test(test_config, test_num):
     }
 
 def main():
-    # Define 5 different test cases
+    # Define tests between real rooms (from data/)
     test_cases = [
         {
-            'name': 'Test 1: Large vs Small',
+            'name': 'Room0 vs Room1',
             'room_a': {
-                'width': 8.0, 'height': 6.0, 'origin': (0.0, 0.0),
-                'seed': 101, 'furniture_density': 0.12,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.05
+                'mesh': 'mesh_semantic_room0.ply',
+                'info': 'info_semantic_room0.json',
             },
             'room_b': {
-                'width': 4.5, 'height': 3.5, 'origin': (0.0, 0.0),
-                'seed': 202, 'furniture_density': 0.18,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.08
+                'mesh': 'mesh_semantic_room1.ply',
+                'info': 'info_semantic_room1.json',
             }
         },
         {
-            'name': 'Test 2: Wide vs Tall',
+            'name': 'Room0 vs Office4',
             'room_a': {
-                'width': 9.0, 'height': 4.0, 'origin': (0.0, 0.0),
-                'seed': 303, 'furniture_density': 0.15,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.06
+                'mesh': 'mesh_semantic_room0.ply',
+                'info': 'info_semantic_room0.json',
             },
             'room_b': {
-                'width': 4.5, 'height': 7.0, 'origin': (0.0, 0.0),
-                'seed': 404, 'furniture_density': 0.16,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.07
+                'mesh': 'mesh_semantic_office4.ply',
+                'info': 'info_semantic_office4.json',
             }
         },
         {
-            'name': 'Test 3: Similar Size, Different Layout',
+            'name': 'Room1 vs Office4',
             'room_a': {
-                'width': 6.0, 'height': 5.0, 'origin': (0.0, 0.0),
-                'seed': 505, 'furniture_density': 0.14,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.05
+                'mesh': 'mesh_semantic_room1.ply',
+                'info': 'info_semantic_room1.json',
             },
             'room_b': {
-                'width': 5.5, 'height': 5.5, 'origin': (0.0, 0.0),
-                'seed': 606, 'furniture_density': 0.17,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.09
-            }
-        },
-        {
-            'name': 'Test 4: Very Different Sizes',
-            'room_a': {
-                'width': 10.0, 'height': 7.0, 'origin': (0.0, 0.0),
-                'seed': 707, 'furniture_density': 0.13,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.04
-            },
-            'room_b': {
-                'width': 3.5, 'height': 3.0, 'origin': (0.0, 0.0),
-                'seed': 808, 'furniture_density': 0.22,
-                'add_alcoves': False, 'add_wall_indentations': True, 'wall_irregularity': 0.12
-            }
-        },
-        {
-            'name': 'Test 5: Medium Rooms, High Irregularity',
-            'room_a': {
-                'width': 6.5, 'height': 5.5, 'origin': (0.0, 0.0),
-                'seed': 909, 'furniture_density': 0.16,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.12
-            },
-            'room_b': {
-                'width': 5.5, 'height': 4.5, 'origin': (0.0, 0.0),
-                'seed': 1010, 'furniture_density': 0.19,
-                'add_alcoves': True, 'add_wall_indentations': True, 'wall_irregularity': 0.15
+                'mesh': 'mesh_semantic_office4.ply',
+                'info': 'info_semantic_office4.json',
             }
         }
     ]
