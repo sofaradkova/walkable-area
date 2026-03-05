@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import cv2
 from shapely.geometry import mapping, MultiPolygon
 
-from src.synthetic_generator import make_realistic_room, sample_floor_points
+from src.synthetic_generator import sample_floor_points
 from src.rasterize import points_to_occupancy, postprocess_occupancy, occupancy_to_polygon
 from src.thumbnail_features import (
     render_thumbnail_from_occupancy, _occ_to_thumbnail_mapping,
@@ -274,19 +274,19 @@ def _load_room_polygon(room_cfg):
     Load a room polygon.
 
     Supports two modes:
-      - Synthetic: config has 'width'/'height' etc. → use make_realistic_room
       - Real: config has 'mesh' and 'info' → use compute_walkable_polygon
     """
     if "mesh" in room_cfg and "info" in room_cfg:
         mesh_path = os.path.join(DATA_DIR, room_cfg["mesh"])
         info_path = os.path.join(DATA_DIR, room_cfg["info"])
         print(f"Loading real room from mesh={mesh_path}, info={info_path}")
-        poly = compute_walkable_polygon(mesh_path, info_path, visualize=False, debug=False)
+        poly = compute_walkable_polygon(
+            mesh_path,
+            info_path,
+            visualize=False,
+            debug=True,
+        )
         return poly
-
-    # Fallback: synthetic generator (legacy mode)
-    print(f"Generating synthetic room: {room_cfg['width']}m × {room_cfg['height']}m")
-    return make_realistic_room(**room_cfg)
 
 
 def run_single_test(test_config, test_num):
@@ -571,50 +571,9 @@ def main():
     
     results = []
     verified_count = 0
-    for i, test_config in enumerate(test_cases, 1):
-        result = run_single_test(test_config, i)
-        if result:
-            verification = result.get('verification', {})
-            results.append({
-                'test': test_config['name'],
-                'iou': result['iou'],
-                'intersection_area': result['intersection_area'],
-                'area_a': result['area_a'],
-                'area_b': result['area_b'],
-                'verified': verification.get('verified', False),
-                'verification_reason': verification.get('reason', 'N/A')
-            })
-            if verification.get('verified', False):
-                verified_count += 1
-    
-    # Print summary with verification status
-    print(f"\n{'='*60}")
-    print("SUMMARY OF ALL TESTS")
-    print(f"{'='*60}")
-    for r in results:
-        status = "✓ VERIFIED" if r['verified'] else "✗ NOT VERIFIED"
-        print(f"{r['test']}: {status}")
-        print(f"  IoU: {r['iou']:.4f}")
-        print(f"  Intersection: {r['intersection_area']:.2f} m²")
-        print(f"  Room A: {r['area_a']:.2f} m², Room B: {r['area_b']:.2f} m²")
-        if not r['verified']:
-            print(f"  Reason: {r['verification_reason']}")
-        print()
-    
-    # Print verification statistics
-    print(f"{'='*60}")
-    print(f"VERIFICATION SUMMARY")
-    print(f"{'='*60}")
-    print(f"Verified: {verified_count}/{len(results)} ({verified_count/len(results)*100:.1f}%)")
-    print(f"Not Verified: {len(results) - verified_count}/{len(results)} ({(len(results)-verified_count)/len(results)*100:.1f}%)")
-    print()
-    
-    print(f"All test visualizations saved to {OUT}/")
-    print("Files:")
-    print("  - test_XX_*.png (visualizations)")
-    print("  - test_XX_*_results.json (metrics and verification)")
-    print("  - test_XX_*_intersection_verified.geojson (verified intersections)")
-    print("  - test_XX_*_room_*.geojson (room polygons)")
+
+    # TEMP: only run first test (Room0 vs Room1) for debugging
+    run_single_test(test_cases[0], 1)
 
 if __name__ == "__main__":
     main()
