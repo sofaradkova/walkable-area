@@ -11,8 +11,12 @@ import matplotlib.pyplot as plt
 import cv2
 from shapely.geometry import mapping, MultiPolygon
 
-from src.synthetic_generator import sample_floor_points
-from src.rasterize import points_to_occupancy, postprocess_occupancy, occupancy_to_polygon
+from src.rasterize import (
+    points_to_occupancy,
+    postprocess_occupancy,
+    occupancy_to_polygon,
+    sample_floor_points,
+)
 from src.thumbnail_features import (
     render_thumbnail_from_occupancy, _occ_to_thumbnail_mapping,
     detect_orb_features, match_descriptors_knn_ratio, estimate_transform_from_matches,

@@ -1,18 +1,22 @@
 # src/thumbnail_features.py
 """
-Thumbnail rendering + feature detection + matching + image->world transform helpers.
+Thumbnail rendering, feature detection/matching, and image↔world transform helpers.
 
-APIs:
-- render_thumbnail_from_occupancy(occ, bbox, out_size=256, pad=0)
-- world_to_thumbnail_pixels(x, y, bbox, occ_shape, out_size)
-- thumbnail_pixels_to_world(u, v, bbox, occ_shape, out_size)
-- detect_orb_features(image_gray, n_features=500)
-- match_descriptors_ratio(desc1, desc2, ratio=0.75, cross_check=True)
-- estimate_transform_from_matches(kp1, kp2, matches, method=cv2.RANSAC, ransac_thresh=3.0)
-
-Notes:
-- Uses OpenCV for feature detection/matching and transform estimation.
-- The thumbnail produced is grayscale uint8 (0..255).
+Functions:
+- render_thumbnail_from_occupancy(occ, bbox, out_size=256, pad=0): render a square grayscale thumbnail
+  from a binary occupancy grid and its world-space bounding box.
+- _occ_to_thumbnail_mapping(bbox, occ_shape, out_size): build helper functions to map between occupancy
+  pixels, thumbnail pixels, and world coordinates.
+- detect_orb_features(image_gray, n_features=600): detect ORB keypoints/descriptors and return keypoints,
+  pixel coordinates, and descriptors.
+- estimate_transform_from_matches(pts1_uv, pts2_uv, matches, ransac_thresh=3.0, ransac_conf=0.99):
+  estimate a 2D affine transform between two images from matched keypoints using RANSAC.
+- compute_polygon_intersection_metrics(poly_a, poly_b_aligned): compute intersection/union areas, IoU,
+  and overlap percentages between two polygons.
+- verify_intersection_sufficient(metrics, ...): check IoU/area/overlap thresholds to decide whether two
+  polygons overlap “enough”.
+- match_descriptors_knn_ratio(desc1, desc2, ratio=0.85): run a KNN ratio test (no cross-check) to filter
+  descriptor matches.
 """
 from typing import Tuple, List, Optional
 import numpy as np
@@ -128,38 +132,6 @@ def detect_orb_features(image_gray: np.ndarray, n_features: int = 600):
         return [], np.zeros((0,2), dtype=np.float32), None
     pts = np.array([kp.pt for kp in kps], dtype=np.float32)  # (u,v)
     return kps, pts, desc
-
-def match_descriptors_ratio(desc1, desc2, ratio: float = 0.75, cross_check: bool = True):
-    """
-    KNN ratio test + optional cross-check.
-    Returns list of cv2.DMatch objects (or simple (i,j,dist) tuples).
-    """
-    if desc1 is None or desc2 is None:
-        return []
-    # Use BFMatcher with Hamming for ORB
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-    # KNN match k=2
-    knn = bf.knnMatch(desc1, desc2, k=2)
-    good = []
-    for m in knn:
-        if len(m) < 2:
-            continue
-        m1, m2 = m[0], m[1]
-        if m1.distance < ratio * m2.distance:
-            good.append(m1)
-    if cross_check:
-        # cross-check: ensure best match reciprocates
-        bf2 = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        knn2 = bf2.knnMatch(desc2, desc1, k=1)
-        reverse_best = {m[0].trainIdx: m[0].queryIdx for m in knn2 if len(m) >= 1}
-        good2 = []
-        for m in good:
-            # m.queryIdx from desc1 -> m.trainIdx in desc2
-            if reverse_best.get(m.trainIdx, None) == m.queryIdx:
-                good2.append(m)
-        return good2
-    else:
-        return good
 
 # ---------- estimate transform using cv2 (RANSAC) ----------
 def estimate_transform_from_matches(pts1_uv: np.ndarray,
