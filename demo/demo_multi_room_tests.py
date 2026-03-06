@@ -440,6 +440,12 @@ def run_single_test(test_config, test_num):
         print("Failed to compute metrics")
         return None
     
+    # Report how alignment was found
+    if transform_method == "feature_based_umeyama":
+        print(f"Alignment: feature matching (test {test_num}: {test_config['name']})")
+    else:
+        print(f"Alignment: rotation search (test {test_num}: {test_config['name']})")
+    
     # VERIFICATION STEP: Verify that the area is sufficient (per flowchart)
     verification = verify_intersection_sufficient(
         metrics,
@@ -535,49 +541,55 @@ def run_single_test(test_config, test_num):
         'verified_intersection': verified_inter
     }
 
+def _discover_rooms():
+    """Find all mesh+info pairs in DATA_DIR and return list of room configs."""
+    rooms = []
+    for f in sorted(os.listdir(DATA_DIR)):
+        if f.startswith("mesh_semantic_") and f.endswith(".ply"):
+            stem = f.replace("mesh_semantic_", "").replace(".ply", "")
+            info_name = f"info_semantic_{stem}.json"
+            info_path = os.path.join(DATA_DIR, info_name)
+            if os.path.isfile(info_path):
+                rooms.append({
+                    "name": stem.replace("_", " ").title(),
+                    "mesh": f,
+                    "info": info_name,
+                })
+    return rooms
+
+
 def main():
-    # Define tests between real rooms (from data/)
-    test_cases = [
-        {
-            'name': 'Room0 vs Room1',
-            'room_a': {
-                'mesh': 'mesh_semantic_room0.ply',
-                'info': 'info_semantic_room0.json',
-            },
-            'room_b': {
-                'mesh': 'mesh_semantic_room1.ply',
-                'info': 'info_semantic_room1.json',
-            }
-        },
-        {
-            'name': 'Room0 vs Office4',
-            'room_a': {
-                'mesh': 'mesh_semantic_room0.ply',
-                'info': 'info_semantic_room0.json',
-            },
-            'room_b': {
-                'mesh': 'mesh_semantic_office4.ply',
-                'info': 'info_semantic_office4.json',
-            }
-        },
-        {
-            'name': 'Room1 vs Office4',
-            'room_a': {
-                'mesh': 'mesh_semantic_room1.ply',
-                'info': 'info_semantic_room1.json',
-            },
-            'room_b': {
-                'mesh': 'mesh_semantic_office4.ply',
-                'info': 'info_semantic_office4.json',
-            }
-        }
-    ]
-    
+    rooms = _discover_rooms()
+    if len(rooms) < 2:
+        print("Need at least 2 rooms (mesh_semantic_*.ply + info_semantic_*.json) in data/")
+        return
+
+    # All unordered pairs of rooms
+    test_cases = []
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            ra, rb = rooms[i], rooms[j]
+            test_cases.append({
+                "name": f"{ra['name']} vs {rb['name']}",
+                "room_a": {"mesh": ra["mesh"], "info": ra["info"]},
+                "room_b": {"mesh": rb["mesh"], "info": rb["info"]},
+            })
+
+    print(f"Running {len(test_cases)} test(s) for all room pairs: {[t['name'] for t in test_cases]}\n")
+
     results = []
     verified_count = 0
+    for idx, test_config in enumerate(test_cases, start=1):
+        r = run_single_test(test_config, idx)
+        if r is not None:
+            results.append(r)
+            if r.get("verification", {}).get("verified"):
+                verified_count += 1
 
-    # TEMP: only run first test (Room0 vs Room1) for debugging
-    run_single_test(test_cases[0], 1)
+    print(f"\n{'='*60}")
+    print(f"Done: {verified_count}/{len(results)} verified (of {len(test_cases)} tests run)")
+    print(f"{'='*60}")
+
 
 if __name__ == "__main__":
     main()
