@@ -1,10 +1,10 @@
-# Real-Time Walkable Space Alignment for Remote VR
+# 🖇️ Real-Time Walkable Space Alignment for Remote VR
 
 [Actively working on this project]
 
 This repository contains a Python pipeline for computing, visualizing, and validating geometric overlap between 3D indoor scenes (rooms) given semantic meshes. It projects 3D floor meshes to 2D walkable-area polygons, samples synthetic floor points, rasterizes them to occupancy grids, and uses image-based features plus geometric search to align pairs of rooms and measure their intersection.
 
-##Pipeline Features
+## 📌 Pipeline Features
 
 - Discover all room meshes in `data/` that match the `mesh_semantic_*.ply` / `info_semantic_*.json` pattern.
 - Build a set of unordered room pairs.
@@ -19,7 +19,7 @@ This repository contains a Python pipeline for computing, visualizing, and valid
     - A JSON file with transform parameters, areas, IoU, and verification flags.
     - GeoJSON files for the original polygons, aligned polygons, and (if verified) the intersection polygon.
 
-## Demo
+## 🪄 Demo
 
 ### Installation
 
