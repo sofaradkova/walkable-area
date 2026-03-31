@@ -8,6 +8,8 @@ Functions:
 - apply_affine_to_polygon(poly, affine_params): apply a 2D affine transform to a Shapely polygon.
 - pca_candidate_rotations(poly_a, poly_b): use PCA of each polygon's vertices to generate 4
   candidate alignment angles that orient their principal axes.
+- largest_walkable_subpolygon(poly, min_passage_width=0.5): morphological opening — erode,
+  keep the largest piece, dilate back — to discard inaccessible thin slivers.
 - find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_centroids=True,
   min_passage_width=0.5): search over rotations to maximize the largest contiguous walkable
   intersection (eroded by min_passage_width/2 to remove thin impassable connections).
@@ -75,6 +77,34 @@ def pca_candidate_rotations(poly_a, poly_b):
     angle_b = _pca_polygon(poly_b)
     delta = np.rad2deg(angle_a - angle_b)
     return [(delta + k * 90) % 360 for k in range(4)]
+
+
+def largest_walkable_subpolygon(poly, min_passage_width=0.5):
+    """
+    Return the largest contiguous region of *poly* that is at least
+    ``min_passage_width`` wide everywhere — i.e. actually traversable by a person.
+
+    Algorithm: morphological opening on the polygon.
+      1. Erode by min_passage_width/2  → removes thin slivers and narrow corridors.
+      2. Keep only the largest contiguous piece.
+      3. Dilate back by min_passage_width/2 → restore original width where possible.
+
+    Returns the cleaned polygon, or None if nothing remains.
+    """
+    if poly is None or poly.is_empty:
+        return None
+    r = min_passage_width / 2.0
+    eroded = poly.buffer(-r)
+    if eroded is None or eroded.is_empty:
+        return None
+    if isinstance(eroded, MultiPolygon):
+        largest = max(eroded.geoms, key=lambda g: g.area)
+    else:
+        largest = eroded
+    result = largest.buffer(r)
+    if result is None or result.is_empty:
+        return None
+    return result
 
 
 def _largest_walkable_intersection_area(poly_a, poly_b_aligned, min_passage_width=0.5):

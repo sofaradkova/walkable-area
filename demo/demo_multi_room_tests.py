@@ -15,7 +15,8 @@ from src.thumbnail_features import (
     compute_polygon_intersection_metrics, verify_intersection_sufficient
 )
 from src.polygon_ops import (
-    apply_affine_to_polygon, find_best_alignment_by_rotation, pca_candidate_rotations
+    apply_affine_to_polygon, find_best_alignment_by_rotation,
+    pca_candidate_rotations, largest_walkable_subpolygon,
 )
 from src.mesh_processing import compute_walkable_polygon
 
@@ -333,7 +334,7 @@ def run_single_test(test_config, test_num):
                 poly_b_world,
                 rotation_angles=rotation_angles,
                 use_centroids=True,
-                min_passage_width=0.5,
+                min_passage_width=0.3,
             )
 
         if best_affine is None:
@@ -352,6 +353,28 @@ def run_single_test(test_config, test_num):
         if metrics is None:
             print("Failed to compute metrics")
             return None
+
+        # Replace raw intersection with the largest actually-walkable region:
+        # morphological opening (erode → largest piece → dilate) removes thin slivers
+        # and disconnected fragments that a person could not reach.
+        MIN_PASSAGE = 0.3  # metres
+        raw_inter = metrics["intersection"]
+        walkable_inter = largest_walkable_subpolygon(raw_inter, min_passage_width=MIN_PASSAGE)
+        if walkable_inter is not None and not walkable_inter.is_empty:
+            walkable_area = walkable_inter.area
+            metrics["intersection"] = walkable_inter
+            metrics["intersection_area"] = walkable_area
+            metrics["iou"] = walkable_area / metrics["union_area"] if metrics["union_area"] > 0 else 0.0
+            metrics["overlap_pct_a"] = walkable_area / metrics["area_a"] * 100 if metrics["area_a"] > 0 else 0.0
+            metrics["overlap_pct_b"] = walkable_area / metrics["area_b"] * 100 if metrics["area_b"] > 0 else 0.0
+            print(f"Walkable intersection area (after opening): {walkable_area:.2f} m²")
+        else:
+            metrics["intersection"] = None
+            metrics["intersection_area"] = 0.0
+            metrics["iou"] = 0.0
+            metrics["overlap_pct_a"] = 0.0
+            metrics["overlap_pct_b"] = 0.0
+            print("No walkable intersection found after removing thin passages.")
 
         with _timed_add(timings, "verify_save_export"):
             verification = verify_intersection_sufficient(
