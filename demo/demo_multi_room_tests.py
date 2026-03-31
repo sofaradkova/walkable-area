@@ -11,14 +11,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import mapping, MultiPolygon
 
-from src.thumbnail_features import (
-    compute_polygon_intersection_metrics, verify_intersection_sufficient
+from src.walkable import compute_walkable_polygon
+from src.alignment import (
+    apply_affine_to_polygon, find_best_alignment_by_rotation, pca_candidate_rotations,
 )
-from src.polygon_ops import (
-    apply_affine_to_polygon, find_best_alignment_by_rotation,
-    pca_candidate_rotations, largest_walkable_subpolygon,
+from src.intersection import (
+    largest_walkable_subpolygon, compute_intersection_metrics, verify_intersection,
 )
-from src.mesh_processing import compute_walkable_polygon
 
 OUT = "demo_out"
 os.makedirs(OUT, exist_ok=True)
@@ -128,10 +127,10 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     fig = plt.figure(figsize=(20, 12))
     gs = fig.add_gridspec(
         3,
-        4,
+        3,
         hspace=0.35,
         wspace=0.35,
-        width_ratios=[1.2, 1.2, 1.2, 2.4],
+        width_ratios=[1.2, 1.2, 2.6],
         height_ratios=[1, 1, 1],
     )
 
@@ -139,28 +138,7 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     ax_before_b = fig.add_subplot(gs[0, 1])  # Room B before (separate)
     ax_inter_a = fig.add_subplot(gs[1, 0])  # Intersection in A's coordinate system
     ax_inter_b = fig.add_subplot(gs[1, 1])  # Intersection in B's coordinate system
-    ax_features = fig.add_subplot(gs[0:2, 2])  # Alignment details
-    ax_after = fig.add_subplot(gs[:, 3])  # After alignment (largest panel)
-
-    # 1. Alignment info panel
-    info_lines = ['Alignment method: PCA + rotation search', '(walkable intersection scoring)']
-    if metrics:
-        info_lines += [
-            '',
-            f"IoU: {metrics['iou']:.4f}",
-            f"Intersection: {metrics['intersection_area']:.2f} m²",
-            f"Overlap A: {metrics['overlap_pct_a']:.1f}%",
-            f"Overlap B: {metrics['overlap_pct_b']:.1f}%",
-        ]
-    if verification:
-        status = 'VERIFIED' if verification['verified'] else 'NOT VERIFIED'
-        info_lines += ['', f"Status: {status}", verification.get('reason', '')]
-    ax_features.text(0.05, 0.95, '\n'.join(info_lines),
-                     ha='left', va='top', transform=ax_features.transAxes,
-                     fontsize=9, family='monospace',
-                     bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
-    ax_features.set_title('Alignment Info')
-    ax_features.axis('off')
+    ax_after = fig.add_subplot(gs[:, 2])  # After alignment (largest panel)
     
     # Helper function to plot polygon
     def plot_polygon(ax, poly, color, linestyle='-', linewidth=2, alpha=0.3, label=None, fill=True):
@@ -189,7 +167,7 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
                 ax.fill(xi, yi, color=hole_color, alpha=1.0, zorder=3)
                 ax.plot(xi, yi, color=color, linestyle=':', linewidth=1.0, alpha=0.8, zorder=4)
     
-    # 2. Before alignment - show rooms separately
+    # Before alignment — rooms in their own coordinate systems
     plot_polygon(ax_before_a, poly_a, 'tab:blue', label=None, alpha=0.3)
     ax_before_a.set_title('Room A (Before Alignment)')
     ax_before_a.set_aspect('equal')
@@ -204,8 +182,7 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     ax_before_b.set_xlabel('X (m)')
     ax_before_b.set_ylabel('Y (m)')
     
-    # 3. Intersection in each coordinate system (separate panels)
-    # Intersection in Room A's coordinate system
+    # Intersection in each room's coordinate system
     plot_polygon(ax_inter_a, poly_a, 'tab:blue', label=None, alpha=0.2)
     if inter and not inter.is_empty:
         plot_polygon(ax_inter_a, inter, 'purple', label=None, 
@@ -222,7 +199,6 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     if inter and not inter.is_empty and final_affine is not None:
         inv_affine = invert_affine_transform(final_affine)
         if inv_affine is not None:
-            from src.polygon_ops import apply_affine_to_polygon
             inter_in_b_coords = apply_affine_to_polygon(inter, inv_affine)
             if inter_in_b_coords and not inter_in_b_coords.is_empty:
                 plot_polygon(ax_inter_b, inter_in_b_coords, 'purple', 
@@ -234,7 +210,7 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     ax_inter_b.set_xlabel('X (m)')
     ax_inter_b.set_ylabel('Y (m)')
     
-    # 4. After alignment with intersection
+    # After alignment with intersection highlighted
     plot_polygon(ax_after, poly_a, 'tab:blue', label='Room A', alpha=0.2)
     if poly_b_aligned:
         plot_polygon(ax_after, poly_b_aligned, 'tab:green', linestyle='--', 
@@ -268,12 +244,7 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     plt.close(fig)
 
 def _load_room_polygon(room_cfg):
-    """
-    Load a room polygon.
-
-    Supports two modes:
-      - Real: config has 'mesh' and 'info' → use compute_walkable_polygon
-    """
+    """Load the walkable polygon from a semantic mesh + info pair."""
     if "mesh" in room_cfg and "info" in room_cfg:
         mesh_path = os.path.join(DATA_DIR, room_cfg["mesh"])
         info_path = os.path.join(DATA_DIR, room_cfg["info"])
@@ -344,7 +315,7 @@ def run_single_test(test_config, test_num):
         final_affine = best_affine
         transform_method = "pca_rotation_search"
         poly_b_aligned = apply_affine_to_polygon(poly_b_world, best_affine)
-        metrics = compute_polygon_intersection_metrics(poly_a_world, poly_b_aligned)
+        metrics = compute_intersection_metrics(poly_a_world, poly_b_aligned)
         print(
             f"Alignment: PCA + rotation search — walkable area: {best_walkable_area:.2f} m², "
             f"raw intersection: {best_inter_area:.2f} m²"
@@ -377,7 +348,7 @@ def run_single_test(test_config, test_num):
             print("No walkable intersection found after removing thin passages.")
 
         with _timed_add(timings, "verify_save_export"):
-            verification = verify_intersection_sufficient(
+            verification = verify_intersection(
                 metrics,
                 min_iou=0.1,
                 min_intersection_area=0.5,
