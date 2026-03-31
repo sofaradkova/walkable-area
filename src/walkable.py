@@ -2,10 +2,9 @@
 """
 Compute a 2D walkable-area polygon from a Replica-format semantic mesh.
 
-The mesh is projected to the floor plane, floor triangles are rasterised to a
-binary occupancy grid, and obstacle footprints (semantic objects touching the
-floor) are subtracted.  The result is a Shapely Polygon/MultiPolygon whose
-interior represents the area a person can actually walk on.
+Floor triangles are rasterised to a binary occupancy grid, obstacle footprints
+(semantic objects touching the floor) are subtracted, and the result is
+recovered as a Shapely Polygon/MultiPolygon with interior holes for obstacles.
 
 Public API:
 - compute_walkable_polygon(mesh_path, info_semantic_path, ...) -> Polygon
@@ -19,7 +18,7 @@ import numpy as np
 import trimesh
 import cv2
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, MultiPolygon, MultiPoint
+from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 
 
@@ -207,55 +206,6 @@ def _walkable_from_raster(mesh, floor_mesh, floor_vertices, object_ids,
     return walkable_geom
 
 
-def _walkable_from_triangle_union(mesh, floor_mesh, floor_vertices, object_ids,
-                                   info_semantic, proj_axes, axis_order, debug):
-    """Slower but more accurate fallback: one Shapely polygon per triangle."""
-    floor_polys = []
-    for face in floor_mesh.faces:
-        tri_verts = floor_vertices[face]
-        tri_2d = tri_verts[:, proj_axes].copy()
-        tri_2d[:, 0] *= -1
-        poly = Polygon(tri_2d)
-        if poly.is_valid and poly.area > 1e-8:
-            floor_polys.append(poly)
-
-    floor_geom = unary_union(floor_polys).buffer(0)
-
-    vertical_axis = axis_order[0]
-    floor_level = np.median(floor_vertices[:, vertical_axis])
-    obstacle_polys = []
-
-    for obj in info_semantic["objects"]:
-        if obj.get("class_name") in _IGNORED_OBSTACLE_CLASSES:
-            continue
-        obj_id = obj["id"]
-        face_idx = np.where(object_ids == obj_id)[0]
-        if len(face_idx) == 0:
-            continue
-        vert_idx = np.unique(mesh.faces[face_idx].reshape(-1))
-        verts3d = mesh.vertices[vert_idx]
-        if verts3d[:, vertical_axis].min() > floor_level + 0.2:
-            continue
-        pts2d = verts3d[:, proj_axes].copy()
-        pts2d[:, 0] *= -1
-        hull = MultiPoint(pts2d).convex_hull
-        if not hull.is_empty and hull.area > 0.05:
-            obstacle_polys.append(hull.buffer(0.02))
-
-    if debug:
-        print(f"Floor level (axis {vertical_axis}): {floor_level:.3f}")
-        print(f"Obstacle objects: {len(obstacle_polys)}")
-
-    obstacle_geom = unary_union(obstacle_polys) if obstacle_polys else None
-    walkable_geom = floor_geom.difference(obstacle_geom) if obstacle_geom else floor_geom
-
-    if debug:
-        print(f"Floor area: {floor_geom.area:.2f} m²")
-        print(f"Walkable area: {walkable_geom.area:.2f} m²")
-
-    return walkable_geom
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -269,14 +219,13 @@ def compute_walkable_polygon(
     raster_resolution: float = 0.03,
     raster_margin: float = 0.2,
     raster_workers: Optional[int] = None,
-    use_triangle_union: bool = False,
 ) -> Polygon:
     """
     Load a Replica-format semantic mesh and return a 2D walkable-area polygon.
 
-    Default path: rasterise floor triangles to a binary grid, subtract obstacle
-    footprints, and recover a Shapely polygon with holes for obstacles.
-    Pass ``use_triangle_union=True`` for the slower but exact Shapely path.
+    Rasterises floor triangles to a binary grid, subtracts obstacle footprints,
+    and recovers a Shapely polygon with interior holes where obstacles sit.
+    Raises RuntimeError if no walkable polygon can be built.
     """
     mesh = trimesh.load(mesh_path)
     object_ids = mesh.metadata["_ply_raw"]["face"]["data"]["object_id"]
@@ -308,26 +257,17 @@ def compute_walkable_polygon(
         print(f"Floor extents (x,y,z): {extents}")
         print(f"Projection axes: {proj_axes}")
 
-    kwargs = dict(mesh=mesh, floor_mesh=floor_mesh, floor_vertices=floor_vertices,
-                  object_ids=object_ids, info_semantic=info_semantic,
-                  proj_axes=proj_axes, axis_order=axis_order, debug=debug)
-
-    if use_triangle_union:
-        walkable_geom = _walkable_from_triangle_union(**kwargs)
-    else:
-        walkable_geom = _walkable_from_raster(
-            **kwargs,
-            raster_resolution=raster_resolution,
-            raster_margin=raster_margin,
-            raster_workers=raster_workers,
-        )
-        if walkable_geom is None or walkable_geom.is_empty:
-            if debug:
-                print("Raster path failed; falling back to triangle union.")
-            walkable_geom = _walkable_from_triangle_union(**kwargs)
+    walkable_geom = _walkable_from_raster(
+        mesh=mesh, floor_mesh=floor_mesh, floor_vertices=floor_vertices,
+        object_ids=object_ids, info_semantic=info_semantic,
+        proj_axes=proj_axes, axis_order=axis_order, debug=debug,
+        raster_resolution=raster_resolution,
+        raster_margin=raster_margin,
+        raster_workers=raster_workers,
+    )
 
     if walkable_geom is None or walkable_geom.is_empty:
-        raise RuntimeError("Could not build walkable polygon.")
+        raise RuntimeError("Could not build walkable polygon from raster path.")
 
     if visualize:
         plt.figure()

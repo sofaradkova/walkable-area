@@ -10,11 +10,13 @@ actually walkable do not inflate the score.
 Public API:
 - apply_affine_to_polygon(poly, affine_params)
 - pca_candidate_rotations(poly_a, poly_b) -> list[float]
-- find_best_alignment_by_rotation(poly_a, poly_b, ...) -> (affine, walkable_area, raw_inter_area)
+- find_best_alignment_by_rotation(poly_a, poly_b, ...) -> (affine, walkable_poly, raw_inter_area)
 """
 import numpy as np
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.affinity import affine_transform, rotate, translate
+
+from src.intersection import largest_walkable_subpolygon
 
 
 def apply_affine_to_polygon(poly: Polygon, affine_params):
@@ -45,26 +47,6 @@ def pca_candidate_rotations(poly_a, poly_b):
     return [(delta + k * 90) % 360 for k in range(4)]
 
 
-def _largest_walkable_area(poly_a, poly_b_candidate, min_passage_width):
-    """
-    Score a candidate alignment by the area of the largest contiguous walkable
-    region in the intersection.  The intersection is eroded by min_passage_width/2
-    so that thin connections narrower than a person can walk are excluded.
-    """
-    try:
-        inter = poly_a.intersection(poly_b_candidate)
-        if inter is None or inter.is_empty:
-            return 0.0
-        eroded = inter.buffer(-min_passage_width / 2.0)
-        if eroded is None or eroded.is_empty:
-            return 0.0
-        if isinstance(eroded, MultiPolygon):
-            return max(g.area for g in eroded.geoms)
-        return eroded.area
-    except Exception:
-        return 0.0
-
-
 def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None,
                                      use_centroids=True, min_passage_width=0.3):
     """
@@ -80,8 +62,10 @@ def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None,
         min_passage_width: Minimum walkable corridor width in metres (default 0.3).
 
     Returns:
-        (affine_params, best_walkable_area, best_raw_inter_area)
+        (affine_params, best_walkable_poly, best_raw_inter_area)
         affine_params is [a, b, d, e, xoff, yoff] for shapely.affinity.affine_transform.
+        best_walkable_poly is the filtered intersection polygon for the winning candidate,
+        ready to use directly — no need to recompute it after the search.
     """
     if poly_a is None or poly_b is None or poly_a.is_empty or poly_b.is_empty:
         return None, 0.0, 0.0
@@ -122,6 +106,7 @@ def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None,
     best_walkable_area = 0.0
     best_inter_area = 0.0
     best_affine = None
+    best_walkable_poly = None
 
     for angle_deg in rotation_angles:
         angle_rad = np.deg2rad(angle_deg)
@@ -161,13 +146,15 @@ def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None,
             except Exception:
                 continue
 
-        walkable = _largest_walkable_area(poly_a, poly_b_rot, min_passage_width)
+        walkable_poly = largest_walkable_subpolygon(inter, min_passage_width)
+        walkable_area = walkable_poly.area if walkable_poly is not None else 0.0
 
-        if walkable > best_walkable_area or (
-            walkable == best_walkable_area and inter_area > best_inter_area
+        if walkable_area > best_walkable_area or (
+            walkable_area == best_walkable_area and inter_area > best_inter_area
         ):
-            best_walkable_area = walkable
+            best_walkable_area = walkable_area
             best_inter_area = inter_area
             best_affine = affine_candidate
+            best_walkable_poly = walkable_poly
 
-    return best_affine, best_walkable_area, best_inter_area
+    return best_affine, best_walkable_poly, best_inter_area

@@ -15,9 +15,7 @@ from src.walkable import compute_walkable_polygon
 from src.alignment import (
     apply_affine_to_polygon, find_best_alignment_by_rotation, pca_candidate_rotations,
 )
-from src.intersection import (
-    largest_walkable_subpolygon, compute_intersection_metrics, verify_intersection,
-)
+from src.intersection import compute_intersection_metrics, verify_intersection
 
 OUT = "demo_out"
 os.makedirs(OUT, exist_ok=True)
@@ -300,7 +298,7 @@ def run_single_test(test_config, test_num):
                     seen.add(a)
                     rotation_angles.append(a)
 
-            best_affine, best_walkable_area, best_inter_area = find_best_alignment_by_rotation(
+            best_affine, best_walkable_poly, best_inter_area = find_best_alignment_by_rotation(
                 poly_a_world,
                 poly_b_world,
                 rotation_angles=rotation_angles,
@@ -315,37 +313,29 @@ def run_single_test(test_config, test_num):
         final_affine = best_affine
         transform_method = "pca_rotation_search"
         poly_b_aligned = apply_affine_to_polygon(poly_b_world, best_affine)
-        metrics = compute_intersection_metrics(poly_a_world, poly_b_aligned)
-        print(
-            f"Alignment: PCA + rotation search — walkable area: {best_walkable_area:.2f} m², "
-            f"raw intersection: {best_inter_area:.2f} m²"
-        )
 
+        # best_walkable_poly is the filtered intersection already computed during
+        # the search — no need to recompute it here.
+        metrics = compute_intersection_metrics(poly_a_world, poly_b_aligned)
         if metrics is None:
             print("Failed to compute metrics")
             return None
 
-        # Replace raw intersection with the largest actually-walkable region:
-        # morphological opening (erode → largest piece → dilate) removes thin slivers
-        # and disconnected fragments that a person could not reach.
-        MIN_PASSAGE = 0.3  # metres
-        raw_inter = metrics["intersection"]
-        walkable_inter = largest_walkable_subpolygon(raw_inter, min_passage_width=MIN_PASSAGE)
-        if walkable_inter is not None and not walkable_inter.is_empty:
-            walkable_area = walkable_inter.area
-            metrics["intersection"] = walkable_inter
+        if best_walkable_poly is not None and not best_walkable_poly.is_empty:
+            walkable_area = best_walkable_poly.area
+            metrics["intersection"] = best_walkable_poly
             metrics["intersection_area"] = walkable_area
             metrics["iou"] = walkable_area / metrics["union_area"] if metrics["union_area"] > 0 else 0.0
             metrics["overlap_pct_a"] = walkable_area / metrics["area_a"] * 100 if metrics["area_a"] > 0 else 0.0
             metrics["overlap_pct_b"] = walkable_area / metrics["area_b"] * 100 if metrics["area_b"] > 0 else 0.0
-            print(f"Walkable intersection area (after opening): {walkable_area:.2f} m²")
+            print(f"Walkable intersection area: {walkable_area:.2f} m²  (raw: {best_inter_area:.2f} m²)")
         else:
             metrics["intersection"] = None
             metrics["intersection_area"] = 0.0
             metrics["iou"] = 0.0
             metrics["overlap_pct_a"] = 0.0
             metrics["overlap_pct_b"] = 0.0
-            print("No walkable intersection found after removing thin passages.")
+            print("No walkable intersection found.")
 
         with _timed_add(timings, "verify_save_export"):
             verification = verify_intersection(
