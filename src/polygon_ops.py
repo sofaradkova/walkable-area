@@ -6,11 +6,14 @@ Functions:
 - estimate_rigid_umeyama(src, dst): estimate a rigid 2D transform (rotation + translation, no scale)
   between corresponding point sets.
 - apply_affine_to_polygon(poly, affine_params): apply a 2D affine transform to a Shapely polygon.
-- find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_centroids=True):
-  search over rotations to maximize polygon intersection / IoU and return the best affine transform.
+- pca_candidate_rotations(poly_a, poly_b): use PCA of each polygon's vertices to generate 4
+  candidate alignment angles that orient their principal axes.
+- find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_centroids=True,
+  min_passage_width=0.5): search over rotations to maximize the largest contiguous walkable
+  intersection (eroded by min_passage_width/2 to remove thin impassable connections).
 """
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiPolygon
 from shapely.affinity import affine_transform, rotate, translate
 
 def estimate_rigid_umeyama(src: np.ndarray, dst: np.ndarray):
@@ -48,20 +51,79 @@ def apply_affine_to_polygon(poly: Polygon, affine_params):
         return poly
     return affine_transform(poly, affine_params)
 
-def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_centroids=True):
+
+def _pca_polygon(poly):
+    """Return the angle (radians) of the principal axis of a polygon's vertex cloud."""
+    if isinstance(poly, MultiPolygon):
+        coords = np.concatenate([np.array(g.exterior.coords[:-1]) for g in poly.geoms])
+    else:
+        coords = np.array(poly.exterior.coords[:-1])
+    coords = coords - coords.mean(axis=0)
+    cov = np.cov(coords.T)
+    _, vecs = np.linalg.eigh(cov)
+    principal = vecs[:, -1]
+    return np.arctan2(principal[1], principal[0])
+
+
+def pca_candidate_rotations(poly_a, poly_b):
     """
-    Try different rotation angles and find the one that maximizes intersection/IoU.
-    
+    Use PCA of each polygon's vertex cloud to generate 4 candidate alignment angles
+    (degrees). Aligning principal axes produces 4 candidates due to the 180° sign
+    ambiguity of PCA axes (0 / 90 / 180 / 270 degree variants).
+    """
+    angle_a = _pca_polygon(poly_a)
+    angle_b = _pca_polygon(poly_b)
+    delta = np.rad2deg(angle_a - angle_b)
+    return [(delta + k * 90) % 360 for k in range(4)]
+
+
+def _largest_walkable_intersection_area(poly_a, poly_b_aligned, min_passage_width=0.5):
+    """
+    Return the area of the largest contiguous walkable region in the intersection.
+
+    Erodes the intersection by min_passage_width / 2 to remove narrow connections
+    that are geometrically present but not actually walkable (e.g. thin slivers or
+    corridors narrower than a person). Returns the area of the largest remaining
+    contiguous piece (0.0 if the eroded result is empty).
+    """
+    try:
+        inter = poly_a.intersection(poly_b_aligned)
+        if inter is None or inter.is_empty:
+            return 0.0
+        eroded = inter.buffer(-min_passage_width / 2.0)
+        if eroded is None or eroded.is_empty:
+            return 0.0
+        if isinstance(eroded, MultiPolygon):
+            return max(g.area for g in eroded.geoms)
+        return eroded.area
+    except Exception:
+        return 0.0
+
+
+def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_centroids=True,
+                                    min_passage_width=0.5):
+    """
+    Try different rotation angles and find the one that maximizes the largest
+    contiguous walkable intersection area (not raw IoU).
+
+    The intersection is eroded by min_passage_width/2 before scoring so that thin
+    connections narrower than a person can walk are ignored. The largest remaining
+    contiguous piece is what gets maximised.
+
     Args:
         poly_a: Reference polygon (remains unchanged)
         poly_b: Polygon to align (will be rotated)
-        rotation_angles: List of angles in degrees to try. If None, tries [0, 90, 180, 270] and fine-grained around best
+        rotation_angles: List of angles in degrees to try. If None, uses PCA-derived
+            candidate angles (4) plus a full 15° coarse grid (24), deduplicated.
         use_centroids: If True, centers both polygons before rotation
-    
+        min_passage_width: Minimum walkable passage width in metres (default 0.5 m).
+            Connections narrower than this are treated as impassable and excluded
+            from the score.
+
     Returns:
         best_affine: Affine transform [a, b, d, e, xoff, yoff] that gives best alignment
-        best_iou: IoU value for best alignment
-        best_inter_area: Intersection area for best alignment
+        best_walkable_area: Largest walkable intersection area for best alignment
+        best_inter_area: Raw intersection area for best alignment
     """
     if poly_a is None or poly_b is None or poly_a.is_empty or poly_b.is_empty:
         return None, 0.0, 0.0
@@ -108,11 +170,20 @@ def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_ce
         poly_a_centered = poly_a
         poly_b_centered = poly_b
     
-    # Default rotation angles: coarse grid first
+    # Default: PCA-derived candidates + full 15° coarse grid, deduplicated
     if rotation_angles is None:
-        rotation_angles = list(range(0, 360, 15))  # Try every 15 degrees
-    
-    best_iou = 0.0
+        pca_angles = pca_candidate_rotations(poly_a, poly_b)
+        coarse = list(range(0, 360, 15))
+        # Round PCA angles to nearest degree and merge with coarse grid
+        pca_rounded = [round(a) % 360 for a in pca_angles]
+        seen = set()
+        rotation_angles = []
+        for a in pca_rounded + coarse:
+            if a not in seen:
+                seen.add(a)
+                rotation_angles.append(a)
+
+    best_walkable_area = 0.0
     best_inter_area = 0.0
     best_angle = 0.0
     best_affine = None
@@ -173,35 +244,28 @@ def find_best_alignment_by_rotation(poly_a, poly_b, rotation_angles=None, use_ce
             except:
                 continue  # Skip this rotation if poly_b_rotated can't be fixed
         
-        # Compute intersection with this rotation+translation
+        # Score by largest contiguous walkable intersection (eroded to remove thin passages)
         try:
             inter = poly_a_for_inter.intersection(poly_b_rotated)
             inter_area = inter.area if inter and not inter.is_empty else 0.0
-            
-            union = poly_a_for_inter.union(poly_b_rotated)
-            union_area = union.area if union and not union.is_empty else poly_a_for_inter.area
-            iou = inter_area / union_area if union_area > 0 else 0.0
-        except Exception as e:
-            # Skip this rotation if intersection fails (invalid geometry)
-            # Try with buffered polygons to fix precision issues
+        except Exception:
             try:
-                poly_a_buf = poly_a_for_inter.buffer(0.001)
-                poly_b_buf = poly_b_rotated.buffer(0.001)
-                if poly_a_buf.is_empty or poly_b_buf.is_empty:
-                    continue
-                inter = poly_a_buf.intersection(poly_b_buf)
+                inter = poly_a_for_inter.buffer(0.001).intersection(poly_b_rotated.buffer(0.001))
                 inter_area = inter.area if inter and not inter.is_empty else 0.0
-                union = poly_a_buf.union(poly_b_buf)
-                union_area = union.area if union and not union.is_empty else poly_a_buf.area
-                iou = inter_area / union_area if union_area > 0 else 0.0
-            except:
-                continue  # Skip this rotation entirely if still fails
-        
-        if iou > best_iou or (iou == best_iou and inter_area > best_inter_area):
-            best_iou = iou
+            except Exception:
+                continue
+
+        walkable_area = _largest_walkable_intersection_area(
+            poly_a_for_inter, poly_b_rotated, min_passage_width
+        )
+
+        if walkable_area > best_walkable_area or (
+            walkable_area == best_walkable_area and inter_area > best_inter_area
+        ):
+            best_walkable_area = walkable_area
             best_inter_area = inter_area
             best_angle = angle_deg
             best_affine = best_affine_candidate
-    
-    return best_affine, best_iou, best_inter_area
+
+    return best_affine, best_walkable_area, best_inter_area
 

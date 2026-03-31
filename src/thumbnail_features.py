@@ -1,22 +1,16 @@
 # src/thumbnail_features.py
 """
-Thumbnail rendering, feature detection/matching, and image↔world transform helpers.
+Thumbnail rendering, image↔world transform helpers, and polygon intersection metrics.
 
 Functions:
 - render_thumbnail_from_occupancy(occ, bbox, out_size=256, pad=0): render a square grayscale thumbnail
   from a binary occupancy grid and its world-space bounding box.
 - _occ_to_thumbnail_mapping(bbox, occ_shape, out_size): build helper functions to map between occupancy
   pixels, thumbnail pixels, and world coordinates.
-- detect_orb_features(image_gray, n_features=600): detect ORB keypoints/descriptors and return keypoints,
-  pixel coordinates, and descriptors.
-- estimate_transform_from_matches(pts1_uv, pts2_uv, matches, ransac_thresh=3.0, ransac_conf=0.99):
-  estimate a 2D affine transform between two images from matched keypoints using RANSAC.
 - compute_polygon_intersection_metrics(poly_a, poly_b_aligned): compute intersection/union areas, IoU,
   and overlap percentages between two polygons.
 - verify_intersection_sufficient(metrics, ...): check IoU/area/overlap thresholds to decide whether two
-  polygons overlap “enough”.
-- match_descriptors_knn_ratio(desc1, desc2, ratio=0.85): run a KNN ratio test (no cross-check) to filter
-  descriptor matches.
+  polygons overlap "enough".
 """
 from typing import Tuple, List, Optional
 import numpy as np
@@ -116,47 +110,6 @@ def _occ_to_thumbnail_mapping(bbox: Tuple[float,float,float,float], occ_shape: T
         return occpix_to_thumb(u, v)
 
     return occpix_to_thumb, thumb_to_occpix, thumb_to_world, world_to_thumb
-
-# ---------- ORB detect & matching ----------
-def detect_orb_features(image_gray: np.ndarray, n_features: int = 600):
-    """
-    Detect ORB keypoints & descriptors.
-    Returns:
-    - kps: list of cv2.KeyPoint
-    - pts: Nx2 numpy float32 array of (u,v) pixel coordinates
-    - desc: numpy array descriptors (uint8) or None
-    """
-    orb = cv2.ORB_create(nfeatures=n_features)
-    kps, desc = orb.detectAndCompute(image_gray, None)
-    if kps is None or len(kps) == 0:
-        return [], np.zeros((0,2), dtype=np.float32), None
-    pts = np.array([kp.pt for kp in kps], dtype=np.float32)  # (u,v)
-    return kps, pts, desc
-
-# ---------- estimate transform using cv2 (RANSAC) ----------
-def estimate_transform_from_matches(pts1_uv: np.ndarray,
-                                    pts2_uv: np.ndarray,
-                                    matches,
-                                    ransac_thresh: float = 3.0,
-                                    ransac_conf: float = 0.99):
-    """
-    Given keypoint pixel coords in image1 (pts1_uv) and image2 (pts2_uv) and matches (list of DMatches),
-    produce an affine transform matrix (2x3) mapping pts1 -> pts2 using RANSAC.
-    Returns: M (2x3 float) or None, inlier_mask (Nx1 bool)
-    """
-    if len(matches) < 3:
-        return None, None
-    src_pts = np.float32([pts1_uv[m.queryIdx] for m in matches]).reshape(-1,2)
-    dst_pts = np.float32([pts2_uv[m.trainIdx] for m in matches]).reshape(-1,2)
-    # use estimateAffinePartial2D which estimates similarity/affine with RANSAC
-    M, inliers = cv2.estimateAffinePartial2D(src_pts, dst_pts, method=cv2.RANSAC,
-                                             ransacReprojThreshold=ransac_thresh, confidence=ransac_conf,
-                                             maxIters=2000)
-    # inliers is a mask array (N,) where 1 means inlier, 0 means outlier
-    if M is None:
-        return None, None
-    inlier_mask = (inliers.flatten() == 1) if inliers is not None else None
-    return M, inlier_mask
 
 def compute_polygon_intersection_metrics(poly_a, poly_b_aligned):
     """
@@ -319,17 +272,3 @@ def verify_intersection_sufficient(metrics,
         'reason': reason if reason else 'All checks passed'
     }
 
-def match_descriptors_knn_ratio(desc1, desc2, ratio: float = 0.85):
-    """KNN ratio test only (no reciprocal cross-check)."""
-    if desc1 is None or desc2 is None:
-        return []
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-    knn = bf.knnMatch(desc1, desc2, k=2)
-    good = []
-    for m in knn:
-        if len(m) < 2:
-            continue
-        m1, m2 = m[0], m[1]
-        if m1.distance < ratio * m2.distance:
-            good.append(m1)
-    return good

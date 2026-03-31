@@ -1,0 +1,44 @@
+{
+  "test_name": "Office4 vs Room1",
+  "test_num": 2,
+  "transform": {
+    "method": "pca_rotation_search",
+    "affine_matrix": [
+      -0.8829475928589269,
+      0.46947156278589086,
+      -0.46947156278589086,
+      -0.8829475928589269,
+      0.1436276063760659,
+      0.29893469018005625
+    ],
+    "affine_params": {
+      "a": -0.8829475928589269,
+      "b": 0.46947156278589086,
+      "c": -0.46947156278589086,
+      "d": -0.8829475928589269,
+      "e": 0.1436276063760659,
+      "f": 0.29893469018005625
+    }
+  },
+  "metrics": {
+    "iou": 0.3921915607664124,
+    "intersection_area": 9.977713929213243,
+    "union_area": 25.440919508097032,
+    "overlap_pct_a": 41.86149776894842,
+    "overlap_pct_b": 86.13676659118006,
+    "area_a": 23.83506195665652,
+    "area_b": 11.583571480653774
+  },
+  "verification": {
+    "verified": true,
+    "iou_check": true,
+    "area_check": true,
+    "overlap_check": true,
+    "reason": "All checks passed"
+  },
+  "verification_thresholds": {
+    "min_iou": 0.1,
+    "min_intersection_area": 0.5,
+    "min_overlap_pct": 5.0
+  }
+}
