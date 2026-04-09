@@ -15,7 +15,8 @@ from src.walkable import compute_walkable_polygon
 from src.alignment import (
     apply_affine_to_polygon, find_best_alignment_by_rotation, pca_candidate_rotations,
 )
-from src.intersection import compute_intersection_metrics, verify_intersection
+from src.intersection import compute_intersection_metrics, verify_intersection, largest_walkable_subpolygon
+from src.dynamic import make_blob, apply_dynamic_obstacle, make_trajectory
 
 OUT = "demo_out"
 os.makedirs(OUT, exist_ok=True)
@@ -241,6 +242,142 @@ def plot_test_result(poly_a, poly_b, poly_b_aligned, inter, metrics, test_name, 
     fig.savefig(outpath, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
+N_FRAMES = 12
+_SIM_COLS = 4
+
+
+def _plot_poly_dynamic(ax, poly, color, alpha=0.3, linewidth=1.5, linestyle="-", zorder=2):
+    if poly is None or poly.is_empty:
+        return
+    geoms = poly.geoms if isinstance(poly, MultiPolygon) else [poly]
+    for g in geoms:
+        if not hasattr(g, "exterior") or g.exterior is None:
+            continue
+        x, y = g.exterior.xy
+        ax.fill(x, y, color=color, alpha=alpha, zorder=zorder)
+        ax.plot(x, y, color=color, linewidth=linewidth, linestyle=linestyle, zorder=zorder + 1)
+        for interior in g.interiors:
+            xi, yi = zip(*interior.coords)
+            ax.fill(xi, yi, color="white", alpha=1.0, zorder=zorder + 1)
+            ax.plot(xi, yi, color=color, linewidth=0.8, linestyle=":", zorder=zorder + 2)
+
+
+def plot_dynamic_simulation(poly_a, poly_b_aligned, static_walkable,
+                             test_name, test_num, outpath):
+    """
+    Simulate a blob moving through poly_a, subtract it each frame, recompute the
+    walkable intersection, and save a grid visualization alongside a trajectory panel.
+
+    Obstacle size, shape, and trajectory direction are varied deterministically
+    per test_num so every room pair looks different.
+    """
+    # --- Per-pair obstacle parameters derived from test_num ---
+    rng = np.random.default_rng(test_num * 7)
+    base_radius  = float(rng.uniform(0.20, 0.55))
+    amp1         = float(rng.uniform(0.20, 0.45))
+    amp2         = float(rng.uniform(0.10, 0.25))
+    traj_angle   = float(rng.uniform(0, 150))   # degrees
+    blob_seed    = test_num * 100
+
+    static_area  = static_walkable.area if static_walkable else 0.0
+    positions    = make_trajectory(poly_a, static_walkable, N_FRAMES, angle_deg=traj_angle)
+
+    frames = []
+    for pos in positions:
+        blob        = make_blob(pos[0], pos[1], base_radius=base_radius,
+                                amp1=amp1, amp2=amp2, seed=blob_seed)
+        dynamic_a   = apply_dynamic_obstacle(poly_a, blob)
+        dynamic_w   = apply_dynamic_obstacle(static_walkable, blob)
+        area        = dynamic_w.area if dynamic_w else 0.0
+        frames.append({"pos": pos, "blob": blob, "dynamic_a": dynamic_a,
+                        "dynamic_walkable": dynamic_w, "area": area})
+
+    # --- Figure layout ---
+    rows = (N_FRAMES + _SIM_COLS - 1) // _SIM_COLS
+    fig  = plt.figure(figsize=(4 + _SIM_COLS * 3.6, rows * 3.8))
+
+    ax_traj = fig.add_axes([0.02, 0.08, 0.20, 0.84])
+
+    grid_left, grid_width = 0.25, 0.73
+    grid_bottom, grid_height = 0.08, 0.84
+    cell_w = grid_width  / _SIM_COLS
+    cell_h = grid_height / rows
+    frame_axes = []
+    for r in range(rows):
+        for c in range(_SIM_COLS):
+            ax = fig.add_axes([
+                grid_left + c * cell_w + 0.01,
+                grid_bottom + (rows - 1 - r) * cell_h + 0.01,
+                cell_w - 0.015,
+                cell_h - 0.02,
+            ])
+            frame_axes.append(ax)
+
+    b   = poly_a.union(poly_b_aligned).bounds
+    pad = 0.4
+    xlim = (b[0] - pad, b[2] + pad)
+    ylim = (b[1] - pad, b[3] + pad)
+
+    # Trajectory panel
+    _plot_poly_dynamic(ax_traj, poly_a,          color="tab:blue",  alpha=0.18, zorder=1)
+    _plot_poly_dynamic(ax_traj, poly_b_aligned,  color="tab:green", alpha=0.10, linestyle="--", zorder=1)
+    _plot_poly_dynamic(ax_traj, static_walkable, color="purple",    alpha=0.30, zorder=2)
+    if static_walkable and not static_walkable.is_empty:
+        geoms = static_walkable.geoms if isinstance(static_walkable, MultiPolygon) else [static_walkable]
+        for g in geoms:
+            x, y = g.exterior.xy
+            ax_traj.plot(x, y, color="purple", linewidth=1.0, zorder=3)
+    traj_xs = [f["pos"][0] for f in frames]
+    traj_ys = [f["pos"][1] for f in frames]
+    ax_traj.plot(traj_xs, traj_ys, color="red", linewidth=1.0, linestyle="--", alpha=0.5, zorder=4)
+    for i, frame in enumerate(frames):
+        _plot_poly_dynamic(ax_traj, frame["blob"], color="red", alpha=0.25, linewidth=0.8, zorder=5)
+        ax_traj.annotate(str(i + 1), xy=(frame["pos"][0], frame["pos"][1]),
+                         xytext=(3, 3), textcoords="offset points", fontsize=5,
+                         color="darkred", zorder=6)
+    ax_traj.set_xlim(xlim); ax_traj.set_ylim(ylim)
+    ax_traj.set_aspect("equal"); ax_traj.grid(True, alpha=0.2)
+    ax_traj.set_title("Trajectory", fontsize=8, fontweight="bold")
+    ax_traj.tick_params(labelsize=5)
+
+    # Per-frame grid
+    for i, frame in enumerate(frames):
+        ax = frame_axes[i]
+        _plot_poly_dynamic(ax, frame["dynamic_a"],       color="tab:blue",  alpha=0.22, zorder=1)
+        _plot_poly_dynamic(ax, poly_b_aligned,           color="tab:green", alpha=0.12, linestyle="--", zorder=1)
+        _plot_poly_dynamic(ax, frame["dynamic_walkable"], color="purple",   alpha=0.55, zorder=3)
+        if static_walkable and not static_walkable.is_empty:
+            geoms = static_walkable.geoms if isinstance(static_walkable, MultiPolygon) else [static_walkable]
+            for g in geoms:
+                x, y = g.exterior.xy
+                ax.plot(x, y, color="grey", linewidth=0.8, linestyle="--", zorder=2, alpha=0.5)
+        delta = frame["area"] - static_area
+        ax.set_title(f"t={i+1}   {frame['area']:.2f} m²  (Δ{delta:+.2f})", fontsize=7)
+        ax.set_xlim(xlim); ax.set_ylim(ylim)
+        ax.set_aspect("equal"); ax.grid(True, alpha=0.2); ax.tick_params(labelsize=5)
+
+    for i in range(len(frames), len(frame_axes)):
+        frame_axes[i].set_visible(False)
+
+    from matplotlib.patches import Patch
+    fig.legend(
+        handles=[
+            Patch(facecolor="tab:blue",  alpha=0.5, label="Room A (obstacle subtracted)"),
+            Patch(facecolor="tab:green", alpha=0.4, label="Room B aligned"),
+            Patch(facecolor="purple",    alpha=0.7, label="Walkable intersection"),
+        ],
+        loc="lower center", ncol=3, fontsize=8, bbox_to_anchor=(0.5, 0.0),
+    )
+    fig.suptitle(
+        f"Dynamic Obstacle — {test_name}   "
+        f"(r={base_radius:.2f}m, angle={traj_angle:.0f}°, "
+        f"static baseline: {static_area:.2f} m²,  grey dashed = static intersection)",
+        fontsize=9, fontweight="bold", y=0.98,
+    )
+    fig.savefig(outpath, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _load_room_polygon(room_cfg):
     """Load the walkable polygon from a semantic mesh + info pair."""
     if "mesh" in room_cfg and "info" in room_cfg:
@@ -438,6 +575,16 @@ def run_single_test(test_config, test_num):
                 verification=verification,
                 final_affine=final_affine,
             )
+            dynamic_outpath = os.path.join(OUT, f"{test_base}_dynamic_obstacle.png")
+            plot_dynamic_simulation(
+                poly_a_world,
+                poly_b_aligned,
+                best_walkable_poly,
+                test_config["name"],
+                test_num,
+                dynamic_outpath,
+            )
+            print(f"  Saved dynamic obstacle visualization to {dynamic_outpath}")
 
         status_icon = "✓ VERIFIED" if verification["verified"] else "✗ NOT VERIFIED"
         print(
